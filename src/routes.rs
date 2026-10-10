@@ -33,14 +33,14 @@ pub fn router(state: AppState) -> Router {
             "/api/passkeys/register/finish",
             post(passkey_register_finish),
         )
-        .route("/api/passkeys/{id}", axum::routing::delete(passkey_delete))
+        .route("/api/passkeys/:id", axum::routing::delete(passkey_delete))
         .route("/api/login-approvals", post(approval_create))
         .route("/api/login-approvals/pending", get(approval_pending))
-        .route("/api/login-approvals/{id}", get(approval_poll))
-        .route("/api/login-approvals/{id}/allow", post(approval_allow))
-        .route("/api/login-approvals/{id}/deny", post(approval_deny))
+        .route("/api/login-approvals/:id", get(approval_poll))
+        .route("/api/login-approvals/:id/allow", post(approval_allow))
+        .route("/api/login-approvals/:id/deny", post(approval_deny))
         .route("/api/devices", get(devices))
-        .route("/api/devices/{id}", axum::routing::delete(device_delete))
+        .route("/api/devices/:id", axum::routing::delete(device_delete))
         .route("/api/me", get(me))
         .route("/api/me/email", put(bind_email))
         .route("/api/me/totp/setup", post(totp_setup))
@@ -50,40 +50,40 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me/meals", get(my_meals))
         .route("/api/me/meal-template", get(my_template))
         .route("/api/me/score-targets", get(score_targets))
-        .route("/api/meals/{date}/{slot}", put(put_meal))
+        .route("/api/meals/:date/:slot", put(put_meal))
         .route("/api/meal-templates/generate", post(generate_template))
-        .route("/api/meal-templates/{id}", put(put_template))
-        .route("/api/meal-templates/{id}/slots", put(put_slot))
-        .route("/api/meal-templates/{id}/apply", post(apply_template))
+        .route("/api/meal-templates/:id", put(put_template))
+        .route("/api/meal-templates/:id/slots", put(put_slot))
+        .route("/api/meal-templates/:id/apply", post(apply_template))
         .route("/api/canteens", get(list_canteens))
         .route(
-            "/api/canteens/{id}/dishes",
+            "/api/canteens/:id/dishes",
             get(list_dishes).post(create_dish),
         )
-        .route("/api/canteens/{id}/dishes/{dish_id}", put(update_dish))
+        .route("/api/canteens/:id/dishes/:dish_id", put(update_dish))
         .route(
-            "/api/canteens/{id}/dishes/{dish_id}/image",
+            "/api/canteens/:id/dishes/:dish_id/image",
             post(upload_image).delete(delete_image),
         )
-        .route("/api/dishes/{id}/image", get(read_image))
-        .route("/api/canteens/{id}/headcount", get(headcount))
-        .route("/api/canteens/{id}/alerts", get(alerts))
-        .route("/api/canteens/{id}/selection/week", get(selection_week))
-        .route("/api/canteens/{id}/selection", get(selection_slot))
+        .route("/api/dishes/:id/image", get(read_image))
+        .route("/api/canteens/:id/headcount", get(headcount))
+        .route("/api/canteens/:id/alerts", get(alerts))
+        .route("/api/canteens/:id/selection/week", get(selection_week))
+        .route("/api/canteens/:id/selection", get(selection_slot))
         .route(
-            "/api/canteens/{id}/selection/{date}/{slot}",
+            "/api/canteens/:id/selection/:date/:slot",
             put(put_selection),
         )
         .route("/api/scores", post(create_score))
         .route("/api/notifications", get(notifications))
-        .route("/api/notifications/{id}/read", post(read_notification))
+        .route("/api/notifications/:id/read", post(read_notification))
         .route("/api/push/reservations", post(push_reserved))
         .route("/api/admin/canteens", post(create_canteen))
         .route("/api/admin/role-assignments", post(assign_role))
         .route("/api/admin/invites", post(create_invite).get(list_invites))
         .route("/api/admin/meals", get(admin_meals))
         .route(
-            "/api/admin/meals/{account_id}/{date}/{slot}",
+            "/api/admin/meals/:account_id/:date/:slot",
             put(admin_put_meal),
         )
         .route("/api/admin/comments", get(admin_comments))

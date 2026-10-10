@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -150,22 +150,23 @@ pub trait TemplateBackend: Send + Sync {
     ) -> Result<String, String>;
 }
 
+#[derive(Clone)]
 pub struct ScriptedBackend {
-    pub calls: Mutex<Vec<String>>,
-    pub fail_kinds: Mutex<Vec<String>>,
-    pub response: Mutex<Option<String>>,
+    pub calls: Arc<Mutex<Vec<String>>>,
+    pub fail_kinds: Arc<Mutex<Vec<String>>>,
+    pub response: Arc<Mutex<Option<String>>>,
 }
 
 impl ScriptedBackend {
     pub fn failing_then_script() -> Self {
         Self {
-            calls: Mutex::new(Vec::new()),
-            fail_kinds: Mutex::new(vec![
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail_kinds: Arc::new(Mutex::new(vec![
                 "openai_chat".into(),
                 "openai_responses".into(),
                 "anthropic".into(),
-            ]),
-            response: Mutex::new(None),
+            ])),
+            response: Arc::new(Mutex::new(None)),
         }
     }
 }

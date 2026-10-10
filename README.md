@@ -33,7 +33,7 @@ cargo run
 集成测试：
 
 ```bash
-DATABASE_URL=postgres://ubuntu@localhost/postgres cargo test
+cargo test
 ```
 
-测试会在本机 Postgres 上创建 `duolinzao_test`。没有 `DATABASE_URL` 时，集成测试默认连接 `postgres://ubuntu@localhost/postgres`。
+测试会在本机 Postgres 上创建 `duolinzao_test`。默认走本机 peer 套接字 `/var/run/postgresql`。需要改管理库连接时设置 `DATABASE_URL`。

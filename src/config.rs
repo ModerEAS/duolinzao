@@ -120,17 +120,23 @@ impl AppConfig {
         let dish_image_max_bytes = req_u64(dish, "dish_image.max_bytes", "max_bytes", &mut missing);
         let database_url = req_string(database, "database.url", "url", &mut missing);
 
-        let mut smtp_host = String::new();
-        let mut smtp_port = 0u16;
-        let mut smtp_username = String::new();
-        let mut smtp_password = String::new();
-        let mut smtp_from = String::new();
+        let mut smtp_host = optional_string(smtp, "host").unwrap_or_default();
+        let smtp_port = optional_u16(smtp, "port").unwrap_or(0);
+        let smtp_username = optional_string(smtp, "username").unwrap_or_default();
+        let smtp_password = optional_string(smtp, "password").unwrap_or_default();
+        let mut smtp_from = optional_string(smtp, "from").unwrap_or_default();
         if email_enabled {
-            smtp_host = req_string(smtp, "smtp.host", "host", &mut missing).unwrap_or_default();
-            smtp_from = req_string(smtp, "smtp.from", "from", &mut missing).unwrap_or_default();
-            smtp_port = req_u16(smtp, "smtp.port", "port", &mut missing).unwrap_or(0);
-            smtp_username = optional_string(smtp, "username").unwrap_or_default();
-            smtp_password = optional_string(smtp, "password").unwrap_or_default();
+            if smtp_host.is_empty() || is_placeholder(&smtp_host) {
+                missing.push("smtp.host".into());
+                smtp_host.clear();
+            }
+            if smtp_from.is_empty() || is_placeholder(&smtp_from) {
+                missing.push("smtp.from".into());
+                smtp_from.clear();
+            }
+            if smtp_port == 0 {
+                missing.push("smtp.port".into());
+            }
         }
 
         if !missing.is_empty() {
@@ -214,6 +220,15 @@ fn optional_bool(table: Option<&toml::map::Map<String, Value>>, key: &str) -> Op
     table
         .and_then(|item| item.get(key))
         .and_then(Value::as_bool)
+}
+
+fn optional_u16(table: Option<&toml::map::Map<String, Value>>, key: &str) -> Option<u16> {
+    let value = table.and_then(|item| item.get(key))?;
+    match value {
+        Value::Integer(number) if *number > 0 && *number <= u16::MAX as i64 => Some(*number as u16),
+        Value::String(text) if !is_placeholder(text) => text.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn req_string(
@@ -319,15 +334,6 @@ fn req_u64(
             None
         }
     }
-}
-
-fn req_u16(
-    table: Option<&toml::map::Map<String, Value>>,
-    label: &str,
-    key: &str,
-    missing: &mut Vec<String>,
-) -> Option<u16> {
-    req_u64(table, label, key, missing).and_then(|value| u16::try_from(value).ok())
 }
 
 pub fn example_config() -> String {
