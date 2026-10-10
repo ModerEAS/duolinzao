@@ -5,17 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "test": "echo \"vue tests deferred\" && exit 0",
-    "lint": "echo \"lint deferred\" && exit 0"
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "node scripts/check-ui.mjs",
+    "lint": "node scripts/check-ui.mjs"
   },
   "dependencies": {
-    "vue": "^3.5.13"
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.11.4",
+    "vant": "^4.9.21",
+    "vue": "^3.5.22"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.2.1",
+    "@vitejs/plugin-vue": "^5.2.4",
     "typescript": "^5.7.2",
-    "vite": "^6.0.6",
-    "vue-tsc": "^2.2.0"
+    "vite": "^6.3.6",
+    "vue-tsc": "^2.2.12"
   }
 }

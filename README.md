@@ -30,6 +30,12 @@ cargo run
 
 数据库迁移在进程启动时自动执行。也可以只用数据库容器：`docker compose up db`。业务镜像见 `Dockerfile`，Postgres 不打进业务镜像，餐品图片目录需要挂载。
 
+前端在 `web/`。开发时 Vite 把 `/api` 代理到 `127.0.0.1:8080`：
+
+```bash
+cd web && npm install && npm run dev
+```
+
 集成测试：
 
 ```bash
