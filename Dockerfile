@@ -3,8 +3,8 @@
 
 FROM node:22-bookworm-slim AS web
 WORKDIR /src/web
-COPY web/package.json web/package-lock.json* ./
-RUN npm install
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
 COPY web/ .
 RUN npm run build
 
@@ -23,6 +23,8 @@ WORKDIR /app
 COPY LICENSE /app/LICENSE
 COPY --from=rust /src/target/release/duolinzao /app/duolinzao
 COPY --from=web /src/web/dist /app/static
+# 镜像以 nobody 运行：先把餐品图片目录建好并交给它，命名卷才会继承属主。
+RUN mkdir -p /var/lib/duolinzao/images && chown -R 65534:65534 /var/lib/duolinzao
 ENV DUOLINZAO_CONFIG=/config/config.toml
 EXPOSE 8080
 USER 65534:65534

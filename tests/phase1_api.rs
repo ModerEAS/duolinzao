@@ -278,7 +278,11 @@ async fn prepare() -> Api {
 
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .connect("postgres:///duolinzao_test?host=/var/run/postgresql")
+        // 默认本机 peer 套接字；CI 的 runner 里没有套接字，用 TEST_DATABASE_URL 走 TCP。
+        .connect(
+            &std::env::var("TEST_DATABASE_URL")
+                .unwrap_or_else(|_| "postgres:///duolinzao_test?host=/var/run/postgresql".to_string()),
+        )
         .await
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();

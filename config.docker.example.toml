@@ -1,0 +1,48 @@
+# 多邻灶配置示例（容器 / docker compose 用）。
+# 与 config.example.toml 相同，只把主机名和路径换成容器里的：db、/app/static、/var/lib/duolinzao/images。
+# 用法：cp config.docker.example.toml config.docker.toml，再填掉所有 REPLACE_ME。
+# 不要把真实密钥提交到仓库。
+
+[super_admin]
+username = "REPLACE_ME"
+password = "REPLACE_ME"
+
+[webauthn]
+rp_id = "localhost"
+rp_origin = "http://localhost:8080"
+rp_name = "多邻灶"
+
+[email]
+enabled = false
+
+[smtp]
+host = ""
+port = 587
+username = ""
+password = ""
+from = ""
+
+[schedule]
+lock_time = "REPLACE_ME"
+breakfast_after = "REPLACE_ME"
+lunch_after = "REPLACE_ME"
+dinner_after = "REPLACE_ME"
+
+[score_alert]
+mean_threshold = "REPLACE_ME"
+min_samples = "REPLACE_ME"
+
+[crypto]
+local_key = "REPLACE_ME"
+
+[dish_image]
+dir = "/var/lib/duolinzao/images"
+max_bytes = "2097152"
+
+[server]
+bind = "0.0.0.0:8080"
+cookie_secure = false
+static_dir = "/app/static"
+
+[database]
+url = "postgres://duolinzao:duolinzao@db:5432/duolinzao"
