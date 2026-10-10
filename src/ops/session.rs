@@ -679,17 +679,25 @@ async fn load_passkeys(state: &AppState, account_id: Uuid) -> Result<Vec<Passkey
         .collect())
 }
 
+fn passkey_none() -> AppError {
+    AppError::new(
+        axum::http::StatusCode::NOT_FOUND,
+        "passkey_none",
+        "这个账号还没有 Passkey，请用密码登录",
+    )
+}
+
 pub async fn passkey_auth_start(state: &AppState, username: &str) -> Result<Value, AppError> {
     let account_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM account WHERE username = $1")
         .bind(username)
         .fetch_optional(&state.pool)
         .await?;
     let Some(account_id) = account_id else {
-        return Err(AppError::not_found("passkey_none"));
+        return Err(passkey_none());
     };
     let creds = load_passkeys(state, account_id).await?;
     if creds.is_empty() {
-        return Err(AppError::not_found("passkey_none"));
+        return Err(passkey_none());
     }
     let (challenge, auth_state) = state
         .webauthn

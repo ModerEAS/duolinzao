@@ -57,6 +57,24 @@ interface PreviewSlot {
   ordering: boolean;
   color: string;
   canteen_id: string | null;
+  locked?: boolean;
+}
+interface HomeMenu {
+  菜: string[];
+  饭: string[];
+  汤: string[];
+}
+interface HomeNext {
+  date: string;
+  slot: Slot;
+  canteen_id: string | null;
+  canteen_name: string | null;
+  menu: HomeMenu;
+}
+interface HomeDay {
+  date: string;
+  locked: boolean;
+  slots: Record<Slot, { state: "locked" | "ordering" | "skip" | "unset" }>;
 }
 interface PreviewDay {
   date: string;
@@ -105,6 +123,9 @@ const mealCanteen = ref("");
 const anchor = ref(shanghaiToday());
 const weekAnchor = ref(weekStart(shanghaiToday()));
 const meals = ref<MealItem[]>([]);
+const lockedDates = ref<string[]>([]);
+const homeNext = ref<HomeNext | null>(null);
+const homeDays = ref<HomeDay[]>([]);
 const description = ref("");
 const templateId = ref<string | null>(null);
 const preview = ref<PreviewDay[]>([]);
@@ -128,13 +149,14 @@ const shiftLabel = computed(() => {
 const title = computed(() => {
   if (tab.value === "score") return "评分";
   if (screen.value === "shift") return "选择班制";
-  if (screen.value === "week") return "本周报餐";
+  if (screen.value === "week") return weekTitle(weekAnchor.value);
   if (screen.value === "generate") return "用描述生成模板";
   if (screen.value === "preview") return "模板预览";
   if (screen.value === "bind") return "绑定食堂";
   if (screen.value === "devices") return "设备与 Passkey";
   if (screen.value === "notices") return "站内提示";
   if (tab.value === "mine") return "我的";
+  if (screen.value === "home") return "首页";
   return "报餐";
 });
 const canBack = computed(() => screen.value !== "home" && screen.value !== "mine");
@@ -142,6 +164,47 @@ const unread = computed(() => notes.value.filter((item) => !item.read_at).length
 
 function toastError(error: unknown) {
   showFailToast(explain(error));
+}
+
+function weekTitle(anchor: string) {
+  const current = weekStart(shanghaiToday());
+  if (anchor === current) return "本周报餐";
+  return `${anchor.slice(5)}–${addDays(anchor, 6).slice(5)} 报餐`;
+}
+
+function greeting() {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai",
+      hour: "numeric",
+      hourCycle: "h23",
+    }).format(new Date()),
+  );
+  if (hour < 11) return "早上好";
+  if (hour < 14) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+function relativeDay(iso: string) {
+  const today = shanghaiToday();
+  if (iso === today) return "今天";
+  if (iso === addDays(today, 1)) return "明天";
+  return weekdayLabel(iso);
+}
+
+function monthDay(iso: string) {
+  const [, month, day] = iso.split("-");
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+function shortMonthDay(iso: string) {
+  const [, month, day] = iso.split("-");
+  return `${month}/${day}`;
+}
+
+function menuNames(names: string[] | undefined) {
+  return names && names.length ? names.join("、") : "未排菜";
 }
 
 function cell(date: string, slot: Slot) {
@@ -182,15 +245,24 @@ async function loadShift() {
 }
 
 async function loadHome() {
-  await Promise.all([loadShift(), loadNotes()]);
+  const [board] = await Promise.all([
+    api<{ next: HomeNext | null; days: HomeDay[] }>("/api/me/home"),
+    loadShift(),
+    loadNotes(),
+  ]);
+  homeNext.value = board.next;
+  homeDays.value = board.days;
 }
 
 async function loadWeek() {
   await loadBound();
   const start = weekAnchor.value;
   const end = addDays(start, 6);
-  const body = await api<{ items: MealItem[] }>(`/api/me/meals?start=${start}&end=${end}`);
+  const body = await api<{ items: MealItem[]; locked_dates?: string[] }>(
+    `/api/me/meals?start=${start}&end=${end}`,
+  );
   meals.value = body.items;
+  lockedDates.value = body.locked_dates ?? [];
 }
 
 async function loadPreview() {
@@ -251,7 +323,17 @@ async function refresh() {
   }
 }
 
-async function chooseWork2() {
+function boundCanteen() {
+  if (!bound.value.length || !mealCanteen.value) {
+    showFailToast("请先绑定食堂");
+    return "";
+  }
+  return mealCanteen.value;
+}
+
+async function saveWork2() {
+  const canteenId = boundCanteen();
+  if (!canteenId) return;
   if (!anchor.value) {
     showFailToast("上二休四需要锚点日");
     return;
@@ -262,27 +344,34 @@ async function chooseWork2() {
       body: JSON.stringify({
         kind: "work2_rest4",
         anchor_date: anchor.value,
-        canteen_id: mealCanteen.value || null,
+        canteen_id: canteenId,
       }),
     });
     showSuccessToast("已设为上二休四");
-    screen.value = "preview";
+    screen.value = "home";
   } catch (error) {
     toastError(error);
   }
 }
 
-async function chooseCustom() {
+async function saveCustom() {
+  const canteenId = boundCanteen();
+  if (!canteenId) return;
   try {
     await api("/api/me/shift", {
       method: "PUT",
-      body: JSON.stringify({ kind: "custom", canteen_id: mealCanteen.value || null }),
+      body: JSON.stringify({ kind: "custom", canteen_id: canteenId }),
     });
     showSuccessToast("已设为自定义排班");
-    screen.value = "week";
+    screen.value = "home";
   } catch (error) {
     toastError(error);
   }
+}
+
+function openCurrentWeek() {
+  weekAnchor.value = weekStart(shanghaiToday());
+  screen.value = "week";
 }
 
 async function generate() {
@@ -304,10 +393,7 @@ async function generate() {
 
 async function toggleMeal(date: string, slot: Slot) {
   const current = cell(date, slot);
-  if (current?.locked) {
-    showFailToast("该餐已锁定");
-    return;
-  }
+  if (dayLocked(date) || current?.locked) return;
   const ordering = !(current?.ordering ?? false);
   if (ordering && !mealCanteen.value) {
     showFailToast("请先绑定并选择食堂");
@@ -327,6 +413,7 @@ async function toggleMeal(date: string, slot: Slot) {
 async function togglePreview(day: PreviewDay, slot: Slot) {
   if (!templateId.value) return;
   const current = day.slots[slot];
+  if (current.locked) return;
   const ordering = !current.ordering;
   if (ordering && !mealCanteen.value) {
     showFailToast("报餐需要选择食堂");
@@ -345,9 +432,13 @@ async function togglePreview(day: PreviewDay, slot: Slot) {
         }),
       },
     );
+    if (body.locked) {
+      current.locked = true;
+      showFailToast("该餐已锁定");
+      return;
+    }
     current.ordering = ordering;
     current.color = body.color;
-    if (body.locked && !body.order_updated) showFailToast("模板已改，该餐已锁定，报餐未改");
   } catch (error) {
     toastError(error);
   }
@@ -434,17 +525,36 @@ async function readNote(item: Note) {
   }
 }
 
-function mealStyle(date: string, slot: Slot) {
-  const item = cell(date, slot);
-  if (item?.ordering) return { background: "#2d8a45", color: "#fff", borderColor: "#2d8a45" };
-  if (item) return { background: "#e6a23c", color: "#fff", borderColor: "#e6a23c" };
-  return { background: "#fff", color: "#374151", borderColor: "#e5e7eb" };
+function dayLocked(date: string) {
+  return lockedDates.value.includes(date) || SLOTS.some((slot) => cell(date, slot)?.locked);
 }
 
-function previewStyle(color: string) {
-  if (color === "green") return { background: "#2d8a45", color: "#fff" };
-  if (color === "orange") return { background: "#e6a23c", color: "#fff" };
-  return { background: "#fff", color: "#374151" };
+function mealClass(date: string, slot: Slot) {
+  if (dayLocked(date)) return "locked";
+  const item = cell(date, slot);
+  if (item?.ordering) return "yes";
+  if (item) return "no";
+  return "unset";
+}
+
+function previewClass(slot: PreviewSlot) {
+  if (slot.locked) return "locked";
+  if (slot.color === "green" || slot.ordering) return "yes";
+  return "no";
+}
+
+function homeClass(state: string) {
+  if (state === "ordering") return "yes";
+  if (state === "skip") return "no";
+  if (state === "locked") return "locked";
+  return "unset";
+}
+
+function homeLabel(state: string) {
+  if (state === "ordering") return "报";
+  if (state === "skip") return "不报";
+  if (state === "locked") return "已锁";
+  return "未定";
 }
 
 watch([screen, tab, weekAnchor, scoreDate, scoreSlot], refresh);
@@ -456,13 +566,56 @@ onMounted(refresh);
     <van-nav-bar :title="title" :left-arrow="canBack" @click-left="back" />
     <div class="body">
       <template v-if="tab === 'meal' && screen === 'home'">
-        <div class="hero">
-          <div class="plate" />
-          <h2>{{ shiftLabel || "尚未选择班制" }}</h2>
-          <p>{{ shiftLabel ? "可以改班制，也可以直接改本周报餐" : "默认不报任何一餐" }}</p>
+        <div class="hello">
+          <strong>多邻灶</strong>
+          <p>{{ greeting() }}，{{ auth.me?.username }}</p>
         </div>
-        <van-button type="primary" block round @click="screen = 'shift'">选择班制模板</van-button>
-        <van-button block round class="gap" @click="screen = 'week'">本周手动报餐</van-button>
+        <p v-if="!shiftLabel" class="hint">尚未选择班制，默认不报任何一餐。</p>
+        <section v-if="homeNext" class="next-card">
+          <span class="eyebrow">下一顿已报餐</span>
+          <h2>{{ relativeDay(homeNext.date) }} · {{ SLOT_NAME[homeNext.slot] }}</h2>
+          <p>{{ monthDay(homeNext.date) }} {{ weekdayLabel(homeNext.date) }} · {{ homeNext.canteen_name || "未选食堂" }}</p>
+          <div class="menu-row">
+            <div v-for="kind in KINDS" :key="kind">
+              <span>{{ kind }}</span>
+              <strong :class="{ missing: !homeNext.menu[kind]?.length }">{{ menuNames(homeNext.menu[kind]) }}</strong>
+            </div>
+          </div>
+        </section>
+        <section v-else class="next-card quiet">
+          <span class="eyebrow">下一顿已报餐</span>
+          <h2>还没有即将要吃的报餐</h2>
+          <p>选好班制，或在报餐里打开某一餐后，这里会显示菜单。</p>
+        </section>
+        <section class="panel week-board">
+          <div class="board-head">
+            <h3>近一周报餐</h3>
+            <span>今天起 7 天</span>
+          </div>
+          <div class="legend">
+            <span><i class="dot yes" />报</span>
+            <span><i class="dot no" />不报</span>
+            <span><i class="dot unset" />未定</span>
+            <span><i class="dot locked" />已锁</span>
+          </div>
+          <div class="board-cols"><span>日期</span><span>早</span><span>中</span><span>晚</span></div>
+          <div v-for="day in homeDays" :key="day.date" class="board-row">
+            <div class="when">
+              <strong>{{ relativeDay(day.date) }}</strong>
+              <small>{{ shortMonthDay(day.date) }} {{ weekdayLabel(day.date).slice(1) }}</small>
+            </div>
+            <span
+              v-for="slot in SLOTS"
+              :key="slot"
+              class="status"
+              :class="homeClass(day.slots[slot].state)"
+            >{{ homeLabel(day.slots[slot].state) }}</span>
+          </div>
+        </section>
+        <div class="pills">
+          <button type="button" class="pill" @click="screen = 'shift'">选择班制</button>
+          <button type="button" class="pill" @click="openCurrentWeek">手动改报餐</button>
+        </div>
       </template>
 
       <template v-else-if="tab === 'meal' && screen === 'shift'">
@@ -477,17 +630,17 @@ onMounted(refresh);
             @click="mealCanteen = item.id"
           >{{ item.name }}</button>
         </div>
-        <p v-else class="hint">还没绑定食堂。上二休四仍可先设锚点，报餐前请到「我的」绑定。</p>
+        <p v-else class="hint">还没绑定食堂。请先到「我的」绑定，再保存班制。</p>
         <section class="panel">
           <h3>上二休四</h3>
           <label class="field-label">锚点日</label>
           <input v-model="anchor" type="date" class="date" />
-          <van-button type="primary" block round @click="chooseWork2">使用上二休四</van-button>
+          <van-button type="primary" block round @click="saveWork2">保存</van-button>
         </section>
         <section class="panel">
           <h3>自定义排班</h3>
-          <p class="hint">不自动生成休息日以外的报餐，之后在本周或模板预览里逐餐填写。</p>
-          <van-button block round @click="chooseCustom">使用自定义排班</van-button>
+          <p class="hint">不自动生成休息日以外的报餐，之后在首页或本周报餐里逐餐填写。</p>
+          <van-button type="primary" block round @click="saveCustom">保存</van-button>
         </section>
         <van-button block plain type="primary" @click="screen = 'generate'">用描述生成模板</van-button>
       </template>
@@ -501,7 +654,7 @@ onMounted(refresh);
       </template>
 
       <template v-else-if="tab === 'meal' && screen === 'preview'">
-        <p class="hint">绿色是报餐，橙色是不报。点一下写回个人模板；未锁定的报餐会一起更新。</p>
+        <p class="hint">绿色是报餐，橙色是不报。已锁定是灰色，不能改。点未锁定的餐次会写回个人模板。</p>
         <div v-if="bound.length" class="pills">
           <button
             v-for="item in bound"
@@ -521,9 +674,10 @@ onMounted(refresh);
               :key="slot"
               type="button"
               class="pill"
-              :style="previewStyle(day.slots[slot].color)"
+              :class="previewClass(day.slots[slot])"
+              :disabled="!!day.slots[slot].locked"
               @click="togglePreview(day, slot)"
-            >{{ SLOT_SHORT[slot] }}</button>
+            >{{ day.slots[slot].locked ? `${SLOT_SHORT[slot]} 已锁定` : SLOT_SHORT[slot] }}</button>
           </div>
         </article>
       </template>
@@ -553,11 +707,11 @@ onMounted(refresh);
               :key="slot"
               type="button"
               class="pill"
-              :style="mealStyle(day, slot)"
+              :class="mealClass(day, slot)"
+              :disabled="dayLocked(day)"
               @click="toggleMeal(day, slot)"
             >
-              {{ SLOT_SHORT[slot] }}
-              <small v-if="cell(day, slot)?.locked">锁定</small>
+              {{ dayLocked(day) ? `${SLOT_SHORT[slot]} 已锁定` : SLOT_SHORT[slot] }}
             </button>
           </div>
           <p v-if="cell(day, 'breakfast')?.canteen_id || cell(day, 'lunch')?.canteen_id || cell(day, 'dinner')?.canteen_id" class="hint">
@@ -695,13 +849,47 @@ onMounted(refresh);
 <style scoped>
 .emp { height: 100%; min-height: 100%; display: flex; flex-direction: column; background: #f7f8fa; color: #1f2937; }
 .body { flex: 1; overflow: auto; padding: 12px 12px 20px; }
-.hero { text-align: center; padding: 28px 12px 18px; }
-.plate {
-  width: 88px; height: 88px; margin: 0 auto 12px; border-radius: 50%;
-  background: #e8f5ec; box-shadow: inset 0 0 0 10px #f4fbf6;
+.hello { padding: 4px 4px 8px; }
+.hello strong { font-size: 18px; }
+.hello p, .hint { color: #6b7280; font-size: 13px; margin: 4px 0; }
+.next-card {
+  background: #2d8a45; color: #fff; border-radius: 16px; padding: 16px; margin: 8px 0 12px;
 }
-.hero h2 { margin: 0 0 6px; font-size: 20px; }
-.hero p, .hint { color: #6b7280; font-size: 13px; }
+.next-card.quiet { background: #e8f5ec; color: #1f2937; }
+.next-card h2 { margin: 6px 0 4px; font-size: 22px; }
+.next-card p { margin: 0; font-size: 13px; opacity: 0.92; }
+.eyebrow { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.18); }
+.quiet .eyebrow { background: #d7efe0; color: #246e37; }
+.menu-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.menu-row div { background: rgba(255,255,255,.16); border-radius: 12px; padding: 8px; min-width: 0; }
+.quiet .menu-row div { background: #fff; }
+.menu-row span { display: block; font-size: 12px; opacity: 0.85; }
+.menu-row strong { display: block; margin-top: 4px; font-size: 14px; font-weight: 650; word-break: break-all; }
+.menu-row strong.missing { font-weight: 500; opacity: 0.8; }
+.week-board { padding: 12px; }
+.board-head, .board-cols, .board-row, .legend { display: grid; grid-template-columns: 1.3fr repeat(3, 1fr); gap: 8px; align-items: center; }
+.board-head { grid-template-columns: 1fr auto; margin-bottom: 8px; }
+.board-head h3 { margin: 0; }
+.board-head span, .legend { color: #6b7280; font-size: 12px; }
+.legend { display: flex; gap: 10px; margin-bottom: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+.dot.yes, .status.yes { background: #e5f6ea; color: #1f7a3a; }
+.dot.yes { background: #2d8a45; }
+.dot.no { background: #e6a23c; }
+.dot.unset { background: #fff; box-shadow: inset 0 0 0 1px #d1d5db; }
+.dot.locked { background: #d1d5db; }
+.board-cols { color: #9ca3af; font-size: 12px; text-align: center; }
+.board-cols span:first-child, .when { text-align: left; }
+.board-row { margin-top: 10px; }
+.when strong, .when small { display: block; }
+.when small { color: #9ca3af; font-size: 12px; }
+.status {
+  text-align: center; border-radius: 999px; padding: 6px 0; font-size: 13px; background: #fff;
+  border: 1px solid #e5e7eb; color: #6b7280;
+}
+.status.yes { background: #e7f6ec; color: #1f7a3a; border-color: #b7e4c7; }
+.status.no { background: #fff4e5; color: #b86e00; border-color: #f3d19e; }
+.status.locked { background: #f3f4f6; color: #9ca3af; border-color: #e5e7eb; }
 .gap { margin-top: 10px; }
 .panel { background: #fff; border-radius: 12px; padding: 12px; margin: 10px 0; }
 .panel h3, .block-title { margin: 8px 0; font-size: 15px; }
@@ -711,8 +899,10 @@ onMounted(refresh);
 .pill {
   border: 1px solid #e5e7eb; background: #fff; border-radius: 999px; padding: 6px 12px; font: inherit; cursor: pointer;
 }
-.pill.on { background: #2d8a45; color: #fff; border-color: #2d8a45; }
-.pill small { margin-left: 4px; }
+.pill.on, .pill.yes { background: #2d8a45; color: #fff; border-color: #2d8a45; }
+.pill.no { background: #e6a23c; color: #fff; border-color: #e6a23c; }
+.pill.unset { background: #fff; color: #374151; }
+.pill.locked, .pill:disabled { background: #e5e7eb; color: #9ca3af; border-color: #e5e7eb; cursor: not-allowed; }
 .dish { display: flex; gap: 10px; align-items: flex-start; }
 .dish-main { flex: 1; min-width: 0; }
 .tag { margin-right: 4px; }

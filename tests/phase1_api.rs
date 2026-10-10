@@ -1327,6 +1327,31 @@ async fn phase1_acceptance() {
         meal(&meals, "2026-10-10", "breakfast").unwrap()["ordering"],
         true
     );
+    let locked_dates = meals["locked_dates"].as_array().unwrap();
+    assert!(locked_dates.iter().any(|date| date == "2026-10-10"));
+    assert!(!locked_dates.iter().any(|date| date == "2026-10-11"));
+    let home = must(
+        api.call("GET", "/api/me/home", Some(&emp1), None, None, None)
+            .await,
+        StatusCode::OK,
+        "employee home",
+    )
+    .json();
+    assert_eq!(home["days"].as_array().unwrap().len(), 7);
+    assert_eq!(home["days"][0]["date"], "2026-10-10");
+    assert_eq!(home["days"][0]["locked"], true);
+    assert_eq!(home["days"][0]["slots"]["dinner"]["state"], "locked");
+    assert_eq!(home["days"][1]["date"], "2026-10-11");
+    assert_eq!(home["days"][1]["locked"], false);
+    assert_eq!(home["next"]["date"], "2026-10-10");
+    assert_eq!(home["next"]["slot"], "lunch");
+    assert_eq!(home["next"]["canteen_name"], "一食堂");
+    assert_eq!(home["next"]["menu"]["菜"], json!(["宫保鸡丁"]));
+    assert_eq!(home["next"]["menu"]["饭"], json!([]));
+    assert_eq!(home["next"]["menu"]["汤"], json!([]));
+    let home_text = home.to_string();
+    assert!(!home_text.contains("\"mean\""));
+    assert!(!home_text.contains("preference"));
 
     let five = must(
         api.call(
@@ -1484,10 +1509,101 @@ async fn phase1_acceptance() {
     .json();
     assert_eq!(generated["dsl"]["mode"], "work2_rest4");
     assert_eq!(
+        generated["preview"][0]["slots"]["breakfast"]["locked"],
+        true
+    );
+    assert_eq!(
+        generated["preview"][0]["slots"]["breakfast"]["color"],
+        "locked"
+    );
+    assert_eq!(
+        generated["preview"][1]["slots"]["breakfast"]["locked"],
+        false
+    );
+    assert_eq!(
         api.scripts.calls.lock().unwrap().as_slice(),
         ["openai_chat".to_string(), "local_script".to_string()]
     );
+    must(
+        api.call(
+            "PUT",
+            "/api/admin/llm-channels",
+            Some(&super_token),
+            Some(json!({
+                "channels": [
+                    {"kind": "openai_chat", "api_key": secret, "enabled": true, "base_url": "https://example.invalid/v1", "model": "demo"}
+                ]
+            })),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "remote only",
+    );
+    *api.scripts.fail_kinds.lock().unwrap() = Vec::new();
+    *api.scripts.response.lock().unwrap() = Some(
+        "```json\n{\"mode\":\"custom\",\"week\":[{\"weekday\":1,\"breakfast\":false,\"lunch\":true,\"dinner\":false}]}\n```"
+            .into(),
+    );
+    let fenced = must(
+        api.call(
+            "POST",
+            "/api/meal-templates/generate",
+            Some(&emp1),
+            Some(json!({"description": "只在周一吃午饭", "canteen_id": canteen_a})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "generate from fenced json",
+    )
+    .json();
+    assert_eq!(fenced["dsl"]["mode"], "custom");
+    assert_eq!(fenced["dsl"]["week"][0]["lunch"], true);
+    *api.scripts.response.lock().unwrap() = Some("这不是班制".into());
+    let unparsed = must(
+        api.call(
+            "POST",
+            "/api/meal-templates/generate",
+            Some(&emp1),
+            Some(json!({"description": "随便写一段", "canteen_id": canteen_a})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "parse failure",
+    )
+    .json();
+    assert_eq!(unparsed["error"], "dsl_parse");
+    assert_eq!(unparsed["message"], "解析失败");
+    *api.scripts.fail_kinds.lock().unwrap() = vec![
+        "openai_chat".into(),
+        "openai_responses".into(),
+        "anthropic".into(),
+    ];
+    *api.scripts.response.lock().unwrap() = None;
 
+    let email_setting = must(
+        api.call(
+            "GET",
+            "/api/admin/settings/email",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "email setting",
+    )
+    .json();
+    assert_eq!(email_setting["enabled"], false);
+    assert_eq!(email_setting["smtp_configured"], true);
+    assert!(!email_setting.to_string().contains("127.0.0.1"));
+    assert!(!email_setting.to_string().contains("noreply"));
     must(
         api.call(
             "PUT",

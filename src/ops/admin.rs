@@ -197,7 +197,7 @@ pub async fn set_email_enabled(
     enabled: bool,
 ) -> Result<Value, AppError> {
     let hit = authorize(&user.assignments, Perm::SystemSuper, None)?;
-    if enabled && (state.config.smtp_host.is_empty() || state.config.smtp_from.is_empty()) {
+    if enabled && !smtp_configured(state) {
         return Err(AppError::bad(
             "smtp_not_configured",
             "开启邮箱能力前需要在配置文件里填写 SMTP",
@@ -225,7 +225,16 @@ pub async fn set_email_enabled(
 
 pub async fn get_email_enabled(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
     let _ = authorize(&user.assignments, Perm::SystemSuper, None)?;
-    Ok(json!({"enabled": email_enabled(state).await?}))
+    Ok(json!({
+        "enabled": email_enabled(state).await?,
+        "smtp_configured": smtp_configured(state),
+    }))
+}
+
+fn smtp_configured(state: &AppState) -> bool {
+    !state.config.smtp_host.is_empty()
+        && !state.config.smtp_from.is_empty()
+        && state.config.smtp_port != 0
 }
 
 pub async fn set_score_alert(

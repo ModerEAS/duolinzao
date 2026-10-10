@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me/canteens", put(bind_canteens).get(my_canteens))
         .route("/api/me/shift", put(put_shift).get(get_shift))
         .route("/api/me/meals", get(my_meals))
+        .route("/api/me/home", get(my_home))
         .route("/api/me/meal-template", get(my_template))
         .route("/api/me/score-targets", get(score_targets))
         .route("/api/meals/:date/:slot", put(put_meal))
@@ -478,6 +479,13 @@ async fn my_meals(
     Ok(Json(
         meal::list_meals(&state, &user, query.start, query.end).await?,
     ))
+}
+
+async fn my_home(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(meal::home_board(&state, &user).await?))
 }
 
 async fn my_template(

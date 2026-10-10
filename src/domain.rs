@@ -447,55 +447,101 @@ custom 的 week 是 weekday 1 到 7，每天 breakfast/lunch/dinner 布尔值。
 }
 
 pub fn parse_dsl_text(text: &str) -> Result<MealDsl, String> {
+    parse_dsl_inner(text, 0)
+}
+
+fn parse_dsl_inner(text: &str, depth: u8) -> Result<MealDsl, String> {
+    if depth > 4 {
+        return Err("dsl_parse".into());
+    }
     let trimmed = text.trim();
-    if let Ok(dsl) = serde_json::from_str::<MealDsl>(trimmed) {
-        if dsl.valid_mode() {
-            return Ok(dsl);
-        }
+    if let Some(dsl) = accept_dsl(trimmed) {
+        return Ok(dsl);
     }
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-        if let Some(content) = value
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-        {
-            return parse_dsl_text(content);
-        }
-        if let Some(content) = value.get("output_text").and_then(Value::as_str) {
-            return parse_dsl_text(content);
-        }
-        if let Some(items) = value.get("output").and_then(Value::as_array) {
-            for item in items {
-                if let Some(parts) = item.get("content").and_then(Value::as_array) {
-                    for part in parts {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            if let Ok(dsl) = parse_dsl_text(text) {
-                                return Ok(dsl);
-                            }
-                        }
-                    }
+        for fragment in envelope_texts(&value) {
+            if fragment.trim() != trimmed {
+                if let Ok(dsl) = parse_dsl_inner(&fragment, depth + 1) {
+                    return Ok(dsl);
                 }
             }
         }
-        if let Some(parts) = value.get("content").and_then(Value::as_array) {
-            for part in parts {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    if let Ok(dsl) = parse_dsl_text(text) {
-                        return Ok(dsl);
-                    }
-                }
-            }
+    }
+    let unfenced = unwrap_fence(trimmed);
+    if unfenced.trim() != trimmed {
+        if let Ok(dsl) = parse_dsl_inner(unfenced.trim(), depth + 1) {
+            return Ok(dsl);
         }
     }
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
         if end > start {
-            if let Ok(dsl) = serde_json::from_str::<MealDsl>(&trimmed[start..=end]) {
-                if dsl.valid_mode() {
+            let slice = &trimmed[start..=end];
+            if slice != trimmed {
+                if let Ok(dsl) = parse_dsl_inner(slice, depth + 1) {
                     return Ok(dsl);
                 }
             }
         }
     }
     Err("dsl_parse".into())
+}
+
+fn accept_dsl(text: &str) -> Option<MealDsl> {
+    let dsl = serde_json::from_str::<MealDsl>(text.trim()).ok()?;
+    dsl.valid_mode().then_some(dsl)
+}
+
+fn unwrap_fence(text: &str) -> String {
+    let Some(mark) = text.find("```") else {
+        return text.to_string();
+    };
+    let after = text[mark + 3..].trim_start();
+    let after = after
+        .strip_prefix("json")
+        .or_else(|| after.strip_prefix("JSON"))
+        .unwrap_or(after)
+        .trim_start_matches([' ', '\n', '\r']);
+    match after.find("```") {
+        Some(end) => after[..end].trim().to_string(),
+        None => text.to_string(),
+    }
+}
+
+fn push_text(out: &mut Vec<String>, value: &Value) {
+    if let Some(text) = value.as_str() {
+        out.push(text.to_string());
+        return;
+    }
+    if let Some(parts) = value.as_array() {
+        for part in parts {
+            if let Some(text) = part.as_str() {
+                out.push(text.to_string());
+            } else if let Some(text) = part.get("text").and_then(Value::as_str) {
+                out.push(text.to_string());
+            }
+        }
+    }
+}
+
+fn envelope_texts(value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(content) = value.pointer("/choices/0/message/content") {
+        push_text(&mut out, content);
+    }
+    if let Some(text) = value.get("output_text") {
+        push_text(&mut out, text);
+    }
+    if let Some(items) = value.get("output").and_then(Value::as_array) {
+        for item in items {
+            if let Some(content) = item.get("content") {
+                push_text(&mut out, content);
+            }
+        }
+    }
+    if let Some(content) = value.get("content") {
+        push_text(&mut out, content);
+    }
+    out
 }
 
 const REDACTED_KEYS: &[&str] = &[
@@ -656,5 +702,25 @@ mod tests {
     fn friendly_name_reads_edge_before_chrome() {
         let name = friendly_device("Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Edg/120.0");
         assert_eq!(name, "Windows · Edge");
+    }
+
+    #[test]
+    fn parse_dsl_reads_fence_and_content_array() {
+        let fenced = "说明如下：\n```json\n{\"mode\":\"custom\",\"week\":[{\"weekday\":1,\"breakfast\":false,\"lunch\":true,\"dinner\":false}]}\n```";
+        let dsl = parse_dsl_text(fenced).unwrap();
+        assert_eq!(dsl.mode, "custom");
+        assert!(dsl.week[0].lunch);
+        assert!(!dsl.week[0].breakfast);
+
+        let wrapped = json!({
+            "choices": [{
+                "message": {
+                    "content": [{"type": "text", "text": fenced}]
+                }
+            }]
+        });
+        let dsl = parse_dsl_text(&wrapped.to_string()).unwrap();
+        assert_eq!(dsl.mode, "custom");
+        assert!(parse_dsl_text("没有班制").is_err());
     }
 }

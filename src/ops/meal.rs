@@ -6,7 +6,7 @@ use uuid::Uuid;
 use super::{audit_user, GENERATE_HORIZON_DAYS};
 use crate::domain::{
     dsl_prompt, local_script_dsl, meal_is_locked, order_color, parse_dsl_text, resolve_meal,
-    shanghai_date, upsert_override, valid_slot, MealDsl, SLOTS,
+    shanghai_at, shanghai_date, upsert_override, valid_slot, MealDsl, SLOTS,
 };
 use crate::error::AppError;
 use crate::extract::CurrentUser;
@@ -30,14 +30,15 @@ pub async fn put_shift(
     if kind == "work2_rest4" && anchor_date.is_none() {
         return Err(AppError::bad("anchor_required", "上二休四需要锚点日"));
     }
-    if let Some(canteen_id) = canteen_id {
-        ensure_member(state, user.account_id, canteen_id).await?;
-    }
+    let Some(canteen_id) = canteen_id else {
+        return Err(AppError::bad("canteen_required", "请先绑定食堂"));
+    };
+    ensure_member(state, user.account_id, canteen_id).await?;
     let now = state.clock.now();
     let dsl = if kind == "work2_rest4" {
-        MealDsl::work2(anchor_date.unwrap(), canteen_id)
+        MealDsl::work2(anchor_date.unwrap(), Some(canteen_id))
     } else {
-        MealDsl::custom_blank(canteen_id)
+        MealDsl::custom_blank(Some(canteen_id))
     };
     let mut tx = state.pool.begin().await?;
     sqlx::query(
@@ -95,10 +96,11 @@ pub async fn get_template(state: &AppState, user: &CurrentUser) -> Result<Value,
     let Some((id, dsl)) = load_template(state, user.account_id).await? else {
         return Ok(json!({"id": null, "dsl": null, "preview": []}));
     };
+    let now = state.clock.now();
     Ok(json!({
         "id": id,
         "dsl": dsl,
-        "preview": preview(&dsl, shanghai_date(state.clock.now()), 7),
+        "preview": preview(&dsl, shanghai_date(now), 7, state.config.lock_time, now),
     }))
 }
 
@@ -305,6 +307,19 @@ pub async fn list_meals(
     .fetch_all(&state.pool)
     .await?;
     let now = state.clock.now();
+    let mut locked_dates = Vec::new();
+    if end >= start {
+        let mut cursor = start;
+        loop {
+            if meal_is_locked(cursor, state.config.lock_time, now) {
+                locked_dates.push(cursor);
+            }
+            if cursor >= end {
+                break;
+            }
+            cursor += Duration::days(1);
+        }
+    }
     Ok(json!({
         "items": rows.iter().map(|row| {
             let date: NaiveDate = row.get("meal_date");
@@ -319,7 +334,8 @@ pub async fn list_meals(
                     || meal_is_locked(date, state.config.lock_time, now),
                 "color": order_color(ordering),
             })
-        }).collect::<Vec<_>>()
+        }).collect::<Vec<_>>(),
+        "locked_dates": locked_dates,
     }))
 }
 
@@ -464,6 +480,7 @@ pub async fn generate_template(
     let today = shanghai_date(state.clock.now());
     let prompt = dsl_prompt(description);
     let mut dsl = None::<MealDsl>;
+    let mut parse_failed = false;
     for row in channels {
         if !row.get::<bool, _>("enabled") {
             continue;
@@ -478,6 +495,9 @@ pub async fn generate_template(
                 }
                 Err(err) => {
                     tracing::info!(error = %err, "local script skipped");
+                    if err == "dsl_parse" {
+                        parse_failed = true;
+                    }
                     continue;
                 }
             }
@@ -510,15 +530,24 @@ pub async fn generate_template(
             Ok(text) => text,
             Err(err) => {
                 tracing::info!(kind = %kind, error = %err, "channel failed");
+                if err == "dsl_parse" {
+                    parse_failed = true;
+                }
                 continue;
             }
         };
-        if let Ok(parsed) = parse_dsl_text(&text) {
-            dsl = Some(parsed);
-            break;
+        match parse_dsl_text(&text) {
+            Ok(parsed) => {
+                dsl = Some(parsed);
+                break;
+            }
+            Err(_) => parse_failed = true,
         }
     }
     let Some(mut dsl) = dsl else {
+        if parse_failed {
+            return Err(AppError::bad("dsl_parse", "解析失败"));
+        }
         return Err(AppError::new(
             axum::http::StatusCode::BAD_GATEWAY,
             "template_unavailable",
@@ -551,7 +580,7 @@ pub async fn generate_template(
         "id": template_id,
         "dsl": dsl,
         "generated": written,
-        "preview": preview(&dsl, today, 7),
+        "preview": preview(&dsl, today, 7, state.config.lock_time, state.clock.now()),
     }))
 }
 
@@ -866,10 +895,17 @@ async fn sync_shift(
     Ok(())
 }
 
-fn preview(dsl: &MealDsl, start: NaiveDate, days: i64) -> Vec<Value> {
+fn preview(
+    dsl: &MealDsl,
+    start: NaiveDate,
+    days: i64,
+    lock_time: chrono::NaiveTime,
+    now: chrono::DateTime<Utc>,
+) -> Vec<Value> {
     (0..days)
         .map(|offset| {
             let date = start + Duration::days(offset);
+            let locked = meal_is_locked(date, lock_time, now);
             let mut slots = serde_json::Map::new();
             for slot in SLOTS {
                 let resolved = resolve_meal(dsl, date, slot);
@@ -877,14 +913,142 @@ fn preview(dsl: &MealDsl, start: NaiveDate, days: i64) -> Vec<Value> {
                     (*slot).to_string(),
                     json!({
                         "ordering": resolved.ordering,
-                        "color": order_color(resolved.ordering),
+                        "color": if locked { "locked" } else { order_color(resolved.ordering) },
                         "canteen_id": resolved.canteen_id,
+                        "locked": locked,
                     }),
                 );
             }
-            json!({"date": date, "slots": slots})
+            json!({"date": date, "locked": locked, "slots": slots})
         })
         .collect()
+}
+
+fn meal_after(state: &AppState, slot: &str) -> chrono::NaiveTime {
+    match slot {
+        "breakfast" => state.config.breakfast_after,
+        "lunch" => state.config.lunch_after,
+        _ => state.config.dinner_after,
+    }
+}
+
+pub async fn home_board(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
+    let _ = authorize(&user.assignments, Perm::MealSelfRead, None)?;
+    let now = state.clock.now();
+    let today = shanghai_date(now);
+    let horizon_end = today + Duration::days(13);
+    let rows = sqlx::query(
+        r#"
+        SELECT meal_date, slot, canteen_id, ordering, locked_at
+        FROM meal_order
+        WHERE account_id = $1 AND meal_date >= $2 AND meal_date <= $3
+        "#,
+    )
+    .bind(user.account_id)
+    .bind(today)
+    .bind(horizon_end)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut next_hit: Option<(NaiveDate, String, Option<Uuid>)> = None;
+    for offset in 0..14 {
+        let date = today + Duration::days(offset);
+        for slot in SLOTS {
+            if now >= shanghai_at(date, meal_after(state, slot)) {
+                continue;
+            }
+            let hit = rows.iter().find(|row| {
+                row.get::<NaiveDate, _>("meal_date") == date
+                    && row.get::<String, _>("slot") == *slot
+                    && row.get::<bool, _>("ordering")
+            });
+            if let Some(row) = hit {
+                next_hit = Some((date, (*slot).to_string(), row.get("canteen_id")));
+                break;
+            }
+        }
+        if next_hit.is_some() {
+            break;
+        }
+    }
+
+    let next = match next_hit {
+        None => Value::Null,
+        Some((date, slot, canteen_id)) => {
+            let canteen_name: Option<String> = match canteen_id {
+                Some(id) => {
+                    sqlx::query_scalar("SELECT name FROM canteen WHERE id = $1")
+                        .bind(id)
+                        .fetch_optional(&state.pool)
+                        .await?
+                }
+                None => None,
+            };
+            let mut menu = json!({"菜": [], "饭": [], "汤": []});
+            if let Some(id) = canteen_id {
+                let dishes = sqlx::query(
+                    r#"
+                    SELECT d.name, d.kind
+                    FROM menu_pick p
+                    JOIN dish d ON d.id = p.dish_id
+                    WHERE p.canteen_id = $1 AND p.meal_date = $2 AND p.slot = $3 AND d.enabled = TRUE
+                    ORDER BY d.kind, d.name
+                    "#,
+                )
+                .bind(id)
+                .bind(date)
+                .bind(&slot)
+                .fetch_all(&state.pool)
+                .await?;
+                for dish in dishes {
+                    let kind: String = dish.get("kind");
+                    let name: String = dish.get("name");
+                    if let Some(items) = menu.get_mut(&kind).and_then(Value::as_array_mut) {
+                        items.push(json!(name));
+                    }
+                }
+            }
+            json!({
+                "date": date,
+                "slot": slot,
+                "canteen_id": canteen_id,
+                "canteen_name": canteen_name,
+                "menu": menu,
+            })
+        }
+    };
+
+    let mut days = Vec::new();
+    for offset in 0..7 {
+        let date = today + Duration::days(offset);
+        let locked = meal_is_locked(date, state.config.lock_time, now)
+            || rows.iter().any(|row| {
+                row.get::<NaiveDate, _>("meal_date") == date
+                    && row
+                        .get::<Option<chrono::DateTime<Utc>>, _>("locked_at")
+                        .is_some()
+            });
+        let mut slots = serde_json::Map::new();
+        for slot in SLOTS {
+            let row = rows.iter().find(|row| {
+                row.get::<NaiveDate, _>("meal_date") == date
+                    && row.get::<String, _>("slot") == *slot
+            });
+            let state_name = if locked {
+                "locked"
+            } else if row.is_none() {
+                "unset"
+            } else if row.unwrap().get::<bool, _>("ordering") {
+                "ordering"
+            } else {
+                "skip"
+            };
+            slots.insert((*slot).to_string(), json!({"state": state_name}));
+        }
+        days.push(json!({"date": date, "locked": locked, "slots": slots}));
+    }
+
+    Ok(json!({"next": next, "days": days}))
 }
 
 pub async fn bind_canteens(

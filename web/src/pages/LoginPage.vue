@@ -2,7 +2,7 @@
 import { onMounted, ref } from "vue";
 import { Key, Lock, Message } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
-import { api, type Me } from "../api";
+import { ApiError, api, type Me } from "../api";
 import { refreshSession } from "../session";
 
 const emit = defineEmits<{ enter: [] }>();
@@ -112,6 +112,11 @@ async function passkeyLogin() {
     });
     await enter();
   } catch (error) {
+    if (error instanceof ApiError && error.code === "passkey_none") {
+      showPwd.value = true;
+      ElMessage.info("这个账号还没有 Passkey，请用下面的密码登录");
+      return;
+    }
     ElMessage.error(error instanceof Error ? error.message : "Passkey 登录失败");
   }
 }
@@ -244,6 +249,7 @@ async function poll() {
       <h1>{{ showRegister ? "注册" : "登录" }}</h1>
 
       <template v-if="!showRegister">
+        <el-input v-model="username" placeholder="账号" class="mb" />
         <el-button type="primary" size="large" class="full" @click="passkeyLogin">
           <el-icon><Key /></el-icon>
           使用 Passkey 登录
@@ -271,7 +277,6 @@ async function poll() {
           <span>{{ showPwd ? "▴" : "▾" }}</span>
         </button>
         <div v-if="showPwd" class="pwd-box">
-          <el-input v-model="username" placeholder="账号" class="mb" />
           <el-input v-model="password" type="password" show-password placeholder="密码" class="mb" />
           <el-button type="primary" class="full" @click="passwordLogin">登录</el-button>
         </div>
@@ -281,7 +286,6 @@ async function poll() {
           <span>{{ showWait ? "▴" : "▾" }}</span>
         </button>
         <div v-if="showWait" class="pwd-box">
-          <el-input v-model="username" placeholder="账号" class="mb" />
           <el-button class="full" @click="requestApproval">请已登录设备确认</el-button>
           <p v-if="wait" class="hint">{{ wait.name }} · {{ wait.ip }} · {{ wait.status === "pending" ? "等待确认" : wait.status }}</p>
         </div>
