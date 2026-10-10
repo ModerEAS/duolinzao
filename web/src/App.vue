@@ -254,7 +254,7 @@ onMounted(async () => {
 <style scoped>
 .boot, .solo { min-height: 100vh; }
 .boot { display: grid; place-items: center; color: #6b7280; }
-.solo { max-width: 480px; margin: 0 auto; background: #fff; }
+.solo { height: 100vh; max-width: 480px; margin: 0 auto; background: #fff; }
 .shell { display: flex; min-height: 100vh; }
 .side {
   width: var(--dlz-sidebar-w); background: #fff; border-right: 1px solid #e8eaed;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import {
+  NavBar as VanNavBar,
   Button as VanButton,
   Cell as VanCell,
   CellGroup as VanCellGroup,
