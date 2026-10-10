@@ -1,0 +1,38 @@
+:root {
+  --el-color-primary: #2d8a45;
+  --el-color-primary-light-3: #5aa86c;
+  --el-color-primary-light-5: #7eba8e;
+  --el-color-primary-light-7: #a3ceb0;
+  --el-color-primary-light-8: #b8d9c3;
+  --el-color-primary-light-9: #e8f5ec;
+  --el-color-primary-dark-2: #246e37;
+  --dlz-green: #2d8a45;
+  --dlz-green-soft: #e8f5ec;
+  --dlz-danger: #e74c3c;
+  --dlz-bg: #f3f5f7;
+  --dlz-sidebar-w: 212px;
+  --van-primary-color: #2d8a45;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  line-height: 1.5;
+  color: #1f2937;
+  background: var(--dlz-bg);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; min-height: 100%; background: var(--dlz-bg); }
+
+.el-button--primary {
+  --el-button-bg-color: var(--dlz-green);
+  --el-button-border-color: var(--dlz-green);
+  --el-button-hover-bg-color: #348f4c;
+  --el-button-hover-border-color: #348f4c;
+}
+
+.page-title { margin: 0 0 16px; font-size: 26px; font-weight: 700; color: #111827; }
+.card { background: #fff; border: 1px solid #e8eaed; border-radius: 14px; }
+.thumb {
+  width: 44px; height: 44px; border-radius: 10px; object-fit: cover; flex-shrink: 0;
+  background: #e5e7eb;
+}
+.thumb.ph { background: linear-gradient(135deg, #e5e7eb, #f3f4f6); }
+.muted { color: #6b7280; font-size: 13px; }

@@ -1,0 +1,44 @@
+[package]
+name = "duolinzao"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+rust-version = "1.88"
+description = "多邻灶：部门内部报餐"
+publish = false
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.7", features = ["macros", "multipart"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+hex = "0.4"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1-rustls-tls", "hostname", "pool"] }
+password-hash = "0.5"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs", "io-util"] }
+toml = "0.8"
+totp-rs = { version = "5", default-features = false, features = ["gen_secret", "otpauth"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace", "limit", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+webauthn-rs = "0.5"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

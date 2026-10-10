@@ -1,0 +1,47 @@
+# 多邻灶配置示例。REPLACE_ME 与空值会导致进程拒绝启动。
+# 钟点、阈值、样本量、图片上限和密钥由部署方填写，不要写进代码。
+# 不要把真实密钥提交到仓库。复制为 config.toml 后再填写。
+
+[super_admin]
+username = "REPLACE_ME"
+password = "REPLACE_ME"
+
+[webauthn]
+rp_id = "REPLACE_ME"
+rp_origin = "REPLACE_ME"
+rp_name = "多邻灶"
+
+[email]
+enabled = false
+
+[smtp]
+host = ""
+port = 587
+username = ""
+password = ""
+from = ""
+
+[schedule]
+lock_time = "REPLACE_ME"
+breakfast_after = "REPLACE_ME"
+lunch_after = "REPLACE_ME"
+dinner_after = "REPLACE_ME"
+
+[score_alert]
+mean_threshold = "REPLACE_ME"
+min_samples = "REPLACE_ME"
+
+[crypto]
+local_key = "REPLACE_ME"
+
+[dish_image]
+dir = "REPLACE_ME"
+max_bytes = "REPLACE_ME"
+
+[server]
+bind = "0.0.0.0:8080"
+cookie_secure = false
+static_dir = ""
+
+[database]
+url = "postgres://duolinzao:duolinzao@127.0.0.1:5432/duolinzao"
