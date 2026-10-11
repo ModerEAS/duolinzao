@@ -19,7 +19,12 @@ let weekAdvanced = false;
 
 async function gotoNextWeekOnce(page: Page) {
   if (!weekAdvanced) {
+    // 等周报餐接口落定再找按钮：加载态按钮先渲染为可用，锁态一到就禁用，抢点会悬空。
+    const settled = page
+      .waitForResponse((r) => r.url().includes("/api/me/meals") && r.ok(), { timeout: 15000 })
+      .catch(() => null);
     await page.getByRole("button", { name: "下一周" }).click();
+    await settled;
     weekAdvanced = true;
   }
 }
@@ -27,22 +32,28 @@ async function gotoNextWeekOnce(page: Page) {
 // P0-1：lock_time=09:00，每周日 09:00（北京时间）后下周一三餐已锁，
 // 按钮变成「早 已锁定」且 disabled。死点第一天的「早」必挂，
 // 所以找第一个未锁定的餐次（已锁定按钮名字是「早 已锁定」，正则直接排除）。
-// 绿=yes（报餐），橙=no（不报）。
+// 绿=yes（报餐），橙=no（不报）。每次点击前重查可用，加载中途被禁用就换下一餐。
 async function setMeal(page: Page, wantYes: boolean): Promise<Locator> {
   await gotoNextWeekOnce(page);
   const cls = wantYes ? /yes/ : /no/;
-  const slots = page.getByRole("button", { name: /^(早|中|晚)$/ });
-  const count = await slots.count();
-  for (let i = 0; i < count; i++) {
-    const slot = slots.nth(i);
-    if (!(await slot.isEnabled())) continue;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await slot.click();
-      try {
-        await expect(slot).toHaveClass(cls, { timeout: 8000 });
-        return slot;
-      } catch {
-        // 一次点击没到目标态（初始态恰为反义时需要点两次），再点一次。
+  for (let round = 0; round < 3; round++) {
+    const slots = page.getByRole("button", { name: /^(早|中|晚)$/ });
+    const count = await slots.count();
+    for (let i = 0; i < count; i++) {
+      const slot = slots.nth(i);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          if (!(await slot.isEnabled())) break;
+          await slot.click({ timeout: 5000 });
+        } catch {
+          break; // 点之前被禁用，换下一餐。
+        }
+        try {
+          await expect(slot).toHaveClass(cls, { timeout: 8000 });
+          return slot;
+        } catch {
+          // 一次点击没到目标态（初始态恰为反义时需要点两次），再点一次。
+        }
       }
     }
   }
@@ -230,11 +241,17 @@ Then("该餐显示为绿色", async () => {
 });
 
 When("将某一餐设为不报", async ({ page }) => {
-  // 同一餐后报覆盖先报：优先翻转刚才那一餐。
-  if (lastSlot && (await lastSlot.isEnabled())) {
-    await lastSlot.click();
-    await expect(lastSlot).toHaveClass(/no/);
-    return;
+  // 同一餐后报覆盖先报：优先翻转刚才那一餐，点不动就另找一餐。
+  if (lastSlot) {
+    try {
+      if (await lastSlot.isEnabled()) {
+        await lastSlot.click({ timeout: 5000 });
+        await expect(lastSlot).toHaveClass(/no/, { timeout: 8000 });
+        return;
+      }
+    } catch {
+      // 掉线或被禁用，往下另找。
+    }
   }
   lastSlot = await setMeal(page, false);
 });
