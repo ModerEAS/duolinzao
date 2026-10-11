@@ -51,6 +51,11 @@ export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blo
   return response.blob();
 }
 
+// 登出：吊销当前会话并清 cookie；失败时调用方按 ApiError 处理。
+export async function logout(): Promise<{ revoked: boolean }> {
+  return api<{ revoked: boolean }>("/api/session/logout", { method: "POST" });
+}
+
 export type Kind = "菜" | "饭" | "汤";
 export type Slot = "breakfast" | "lunch" | "dinner";
 

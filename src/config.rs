@@ -32,6 +32,7 @@ pub struct AppConfig {
     pub database_url: String,
     pub bind: SocketAddr,
     pub cookie_secure: bool,
+    pub trust_proxy: bool,
     pub static_dir: Option<String>,
 }
 
@@ -156,6 +157,9 @@ impl AppConfig {
         // 生产默认 true：即使后端容器只听 HTTP（TLS 由 Traefik 等网关终结），
         // 浏览器也只在 HTTPS 下回送 Secure Cookie。本地 HTTP 直连/e2e 才显式配 false。
         let cookie_secure = optional_bool(server, "cookie_secure").unwrap_or(true);
+        // 反代可信开关：缺省 false，直接取对端地址；只有确定前面有可信反代
+        // （如 Traefik）剥掉一层并设置 X-Forwarded-For 时才配 true。
+        let trust_proxy = optional_bool(server, "trust_proxy").unwrap_or(false);
         let static_dir = optional_string(server, "static_dir").filter(|s| !s.is_empty());
 
         Ok(Self {
@@ -182,6 +186,7 @@ impl AppConfig {
             database_url: database_url.unwrap(),
             bind,
             cookie_secure,
+            trust_proxy,
             static_dir,
         })
     }
@@ -380,6 +385,7 @@ max_bytes = "{max_bytes}"
 [server]
 bind = "127.0.0.1:0"
 cookie_secure = false
+trust_proxy = false
 
 [database]
 url = "postgres://ubuntu@localhost/duolinzao_test"

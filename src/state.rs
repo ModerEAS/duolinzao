@@ -209,6 +209,8 @@ impl HttpTemplateBackend {
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            // 出站只跟最多 2 跳重定向，避免被渠道跳转带到内网/恶意站。
+            .redirect(reqwest::redirect::Policy::limited(2))
             .build()
             .expect("http client");
         Self { client }

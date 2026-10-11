@@ -369,6 +369,93 @@ pub fn join_url(base: &str, path: &str) -> String {
     )
 }
 
+/// LLM 出站 base_url 收紧：默认只允许 https；http 仅放行回环测试例外；
+/// 字面私网/链路本地/组播/未指定/文档地址一律拒绝。域名无法在不做 DNS 的情况下
+/// 判定是否指向内网，运维应再配允许列表或出口防火墙，这里只拦字面 IP。
+pub fn validate_llm_base_url(base_url: &str) -> Result<(), String> {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return Ok(()); // 空=用渠道默认 https 地址
+    }
+    if trimmed.len() > 500 {
+        return Err("channel_base_url_invalid".into());
+    }
+    let url = url::Url::parse(trimmed).map_err(|_| "channel_base_url_invalid".to_string())?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("channel_base_url_invalid".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "channel_base_url_invalid".to_string())?;
+    let host_lower = host.to_ascii_lowercase();
+    let is_localhost_name =
+        host_lower == "localhost" || host_lower.ends_with(".localhost");
+    match url.scheme() {
+        "https" => {
+            if is_localhost_name {
+                return Err("channel_base_url_invalid".into());
+            }
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if is_blocked_llm_ip(&ip) {
+                    return Err("channel_base_url_invalid".into());
+                }
+            }
+            Ok(())
+        }
+        // 明确允许的测试例外：只放 http 回环，方便本地 mock 网关。
+        "http" => {
+            if is_localhost_name {
+                return Ok(());
+            }
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if is_loopback_ip(&ip) {
+                    return Ok(());
+                }
+            }
+            Err("channel_base_url_invalid".into())
+        }
+        _ => Err("channel_base_url_invalid".into()),
+    }
+}
+
+fn is_loopback_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            octets[0] == 127
+        }
+        std::net::IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+fn is_blocked_llm_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // 回环 127/8、未指定、广播、私网、链路本地、文档、CGNAT、基准测试网段。
+            o[0] == 127
+                || *v4 == std::net::Ipv4Addr::UNSPECIFIED
+                || *v4 == std::net::Ipv4Addr::BROADCAST
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || (o[0] == 100 && (o[1] & 0b1100_0000) == 64) // 100.64/10
+                || (o[0] == 192 && o[1] == 0 && (o[2] == 0 || o[2] == 2)) // 192.0.0/24, 192.0.2/24
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18/15
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113) // 203.0.113/24
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || v6.is_unicast_link_local()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
+                || *v6 == std::net::Ipv6Addr::LOCALHOST
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
     pub url: String,
@@ -383,6 +470,8 @@ pub fn llm_request(
     api_key: &str,
     prompt: &str,
 ) -> Result<LlmRequest, String> {
+    // 使用时再拦一次：库里若存着加固前的 http/私网地址，直接拒绝出站。
+    validate_llm_base_url(base_url)?;
     match kind {
         "openai_chat" => {
             let base = if base_url.is_empty() {
@@ -656,6 +745,28 @@ mod tests {
         assert_eq!(dsl.mode, "work2_rest4");
         assert!(!resolve_meal(&dsl, today + Duration::days(2), "lunch").ordering);
         assert!(resolve_meal(&dsl, today, "lunch").ordering);
+    }
+
+    #[test]
+    fn llm_base_url_allows_https_blocks_private_and_http() {
+        assert!(validate_llm_base_url("").is_ok());
+        assert!(validate_llm_base_url("https://api.openai.com/v1").is_ok());
+        assert!(validate_llm_base_url("https://example.invalid/v1").is_ok());
+        // http 非回环一律拒绝。
+        assert!(validate_llm_base_url("http://api.openai.com/v1").is_err());
+        assert!(validate_llm_base_url("http://192.168.1.10/v1").is_err());
+        // 明确允许的测试例外：http 回环。
+        assert!(validate_llm_base_url("http://127.0.0.1:8080/v1").is_ok());
+        assert!(validate_llm_base_url("http://localhost:8080/v1").is_ok());
+        // https 也不许指字面私网/链路本地/回环。
+        assert!(validate_llm_base_url("https://192.168.1.10/v1").is_err());
+        assert!(validate_llm_base_url("https://10.0.0.5/v1").is_err());
+        assert!(validate_llm_base_url("https://169.254.169.254/").is_err());
+        assert!(validate_llm_base_url("https://127.0.0.1/v1").is_err());
+        assert!(validate_llm_base_url("https://localhost/v1").is_err());
+        assert!(validate_llm_base_url("ftp://example.com/v1").is_err());
+        // 使用时再拦：库里旧坏地址直接拒绝出站。
+        assert!(llm_request("openai_chat", "http://api.openai.com/v1", "m", "k", "hi").is_err());
     }
 
     #[test]

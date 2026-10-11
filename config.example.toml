@@ -43,6 +43,11 @@ bind = "0.0.0.0:8080"
 # 生产必须 true：即使后端容器只听 HTTP（TLS 由 Traefik/Swarm 网关终结），
 # 浏览器也只在 HTTPS 下回送 Secure Cookie。仅本地 HTTP 直连开发或 e2e 才改为 false。
 cookie_secure = true
+# 反代可信开关：缺省 false，直接取对端地址。生产在 Traefik 后面才配 true，
+# 此时只信一层 X-Forwarded-For 首段 / Forwarded 首个 for=，用于限流与审计记 IP。
+# Traefik 侧必须设置 X-Forwarded-For（entryPoints.proxyProtocol 或 forwardedHeaders），
+# 否则所有请求都会记成网关 IP，限流会误伤。开关关闭时绝不读这些头，防客户端伪造。
+trust_proxy = false
 static_dir = ""
 
 [database]

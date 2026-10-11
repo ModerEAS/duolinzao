@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/register", post(register))
         .route("/api/session/password", post(login_password))
         .route("/api/session/totp", post(login_totp))
+        .route("/api/session/logout", post(logout))
         .route("/api/session/magic-link/request", post(magic_request))
         .route("/api/session/magic-link/consume", post(magic_consume))
         .route("/api/session/passkey/start", post(passkey_start))
@@ -176,6 +177,18 @@ fn with_token(token: &str, secure: bool, body: Value) -> impl IntoResponse {
     (jar, Json(body))
 }
 
+fn cleared_cookie(secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::new("dlz_session", "");
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(SameSite::Lax);
+    if secure {
+        cookie.set_secure(true);
+    }
+    cookie.make_removal();
+    cookie
+}
+
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok", "name": "多邻灶"}))
 }
@@ -239,6 +252,15 @@ async fn login_totp(
         state.config.cookie_secure,
         json!({"ok": true}),
     ))
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<impl IntoResponse, AppError> {
+    let body = session::logout(&state, &user).await?;
+    let jar = CookieJar::new().add(cleared_cookie(state.config.cookie_secure));
+    Ok((jar, Json(body)))
 }
 
 #[derive(Deserialize)]
