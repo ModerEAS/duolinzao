@@ -495,7 +495,7 @@ Given("某账号无法登录", async () => {
   recoverPass = "E2e-recover-1!";
   const res = await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: recoverUser, invite_code: inv.json.code, password: recoverPass }),
   });
   expect(res.status).toBe(201);
@@ -545,7 +545,7 @@ Given("某日三餐已锁定", async () => {
   overrideUser = uniqueTag("ovd_");
   const reg = await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: overrideUser, invite_code: inv.json.code, password: "E2e-ovd-pass1!" }),
   });
   expect(reg.status).toBe(201);

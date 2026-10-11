@@ -253,7 +253,7 @@ export interface Session {
 export async function loginSession(username: string, pwd: string): Promise<Session> {
   const res = await fetch(`${baseURL}/api/session/password`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username, password: pwd }),
   });
   const setCookie = res.headers.get("set-cookie") ?? "";
@@ -268,6 +268,7 @@ export async function loginSession(username: string, pwd: string): Promise<Sessi
       const r = await fetch(`${baseURL}${path}`, {
         method: init.method ?? "GET",
         headers: {
+          "x-dlz-requested": "1",
           ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
           cookie,
         },

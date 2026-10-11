@@ -305,7 +305,7 @@ async function enableVirtualAuth(page: Page) {
 async function bindPasskey(page: Page, name: string) {
   await enableVirtualAuth(page);
   const started = await page.evaluate(async () => {
-    const res = await fetch("/api/passkeys/register/start", { method: "POST" });
+    const res = await fetch("/api/passkeys/register/start", { method: "POST", headers: { "x-dlz-requested": "1" } });
     return { status: res.status, body: await res.json() };
   });
   expect(started.status).toBe(200);
@@ -347,7 +347,7 @@ async function bindPasskey(page: Page, name: string) {
       };
       const res = await fetch("/api/passkeys/register/finish", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-dlz-requested": "1" },
         body: JSON.stringify({ challenge_id: challengeId, credential: payload, friendly_name: label }),
       });
       return { status: res.status, body: await res.text() };
@@ -446,7 +446,7 @@ Then("设备 B 获得会话并可绑定本机 Passkey", async () => {
   await expect(pageC!.locator(".emp")).toBeVisible({ timeout: 20000 });
   // 可绑定 = 注册仪式入口可用（start 返回挑战）。
   const started = await pageC!.evaluate(async () => {
-    const res = await fetch("/api/passkeys/register/start", { method: "POST" });
+    const res = await fetch("/api/passkeys/register/start", { method: "POST", headers: { "x-dlz-requested": "1" } });
     return res.status;
   });
   expect(started).toBe(200);

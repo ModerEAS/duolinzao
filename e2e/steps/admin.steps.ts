@@ -169,7 +169,7 @@ Given("某员工对范围内食堂的次日某餐已报餐", async () => {
   changeDate = shanghaiToday();
   const probe = await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: changeUser, invite_code: inv.json.code, password: "E2e-chg-pass1!" }),
   });
   expect(probe.status).toBe(201);
@@ -241,7 +241,7 @@ When("尝试改范围外食堂的报餐", async () => {
   const u = uniqueTag("out_");
   await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: u, invite_code: inv.json.code, password: "E2e-out-pass1!" }),
   });
   const emp = await loginSession(u, "E2e-out-pass1!");
