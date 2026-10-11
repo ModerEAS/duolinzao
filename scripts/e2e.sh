@@ -35,6 +35,10 @@ set("super_admin", "username", '"root"');
 set("super_admin", "password", '"root-password-1"');
 set("webauthn", "rp_id", '"localhost"');
 set("webauthn", "rp_origin", `"${process.env.DLZ_RP_ORIGIN}"`);
+// e2e 假 SMTP：只为让「邮箱开关」场景能开启能力并看到 magic link，不真实发信。
+// 步骤里从不调用 magic-link/request，所以不会连 smtp.example.invalid。
+set("smtp", "host", '"smtp.example.invalid"');
+set("smtp", "from", '"e2e@example.invalid"');
 set("schedule", "lock_time", '"09:00"');
 set("schedule", "breakfast_after", '"09:30"');
 set("schedule", "lunch_after", '"13:30"');
@@ -71,11 +75,16 @@ curl -fsS "$BASE_URL/api/health" >/dev/null || {
 [ "$started" = 1 ] || echo "复用 $BASE_URL 上已运行的服务"
 
 # 3. 预置食堂 + 邀请码（库内存哈希 sha256 hex）。
+CANTEEN2=${DLZ_E2E_CANTEEN2:-二食堂}
 HASH=$(node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$INVITE_CODE")
 psql "$DB_URL" -v ON_ERROR_STOP=1 \
-  -v canteen="$CANTEEN" -v hash="$HASH" -v super_user=root \
+  -v canteen="$CANTEEN" -v canteen2="$CANTEEN2" -v hash="$HASH" -v super_user=root \
   -f e2e/seed.sql
 
-# 4. 浏览器测试。失败时 Playwright 把截图 / trace / 报告留在 e2e/。
+# 3b. 角色与渠道：二食堂兜底 + 本地脚本 LLM 渠道 + canteen/admin 账号与分配（走真实 API，幂等）。
+DLZ_BASE_URL="$BASE_URL" node e2e/setup-roles.mjs
+
+# 4. 由 features/*.feature 生成用例（@wip 默认不生成），再跑浏览器测试。
 cd e2e
+npx bddgen
 npx playwright test "$@"
