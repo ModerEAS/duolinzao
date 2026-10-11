@@ -35,13 +35,31 @@ export async function openTab(page: Page, name: string) {
   await page.locator(".van-tabbar-item", { hasText: name }).click();
 }
 
+// 向总管 API 现开一张未使用邀请码；失败时退回 seed 的 DLZ_E2E_INVITE_CODE。
+// 单次码：full suite / 重试 / 多次 ensureLoggedIn 都会再开一张，避免 used_at 卡住。
+export async function mintInviteCode(): Promise<string> {
+  try {
+    const s = await rootSession();
+    const r = await s.call("/api/admin/invites", { method: "POST" });
+    if ((r.status === 201 || r.status === 200) && typeof r.json?.code === "string" && r.json.code) {
+      return r.json.code as string;
+    }
+  } catch {
+    // 总管登录或发码失败：用 seed 兜底。
+  }
+  return inviteCode;
+}
+
 // 注册一个全新账号并登录（用户名保证唯一，套件可重复跑）。
 export async function registerNewUser(page: Page) {
   currentUser = `e2e_${Date.now()}_${seq++}`;
+  // 先清会话：同 page 可能还登着 canteen/admin，不清会进不了注册页或注册被会话挡住。
+  await page.context().clearCookies();
+  const code = await mintInviteCode();
   await page.goto("/");
   await page.getByRole("button", { name: "有邀请码，去注册" }).click();
   await page.getByPlaceholder("账号").fill(currentUser);
-  await page.getByPlaceholder("邀请码").fill(inviteCode);
+  await page.getByPlaceholder("邀请码").fill(code);
   await page.getByPlaceholder("密码（至少 8 位）").fill(password);
   await page.getByRole("button", { name: "注册并登录" }).click();
   await expect(page.locator(".emp")).toBeVisible();

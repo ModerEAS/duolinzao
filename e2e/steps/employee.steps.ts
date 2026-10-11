@@ -86,6 +86,7 @@ When("未登录用户打开邀请码注册页", async ({ page }) => {
 });
 
 When("填写字符串账号与邀请码并提交", async ({ page }) => {
+  // registerNewUser 会清 cookie、现开邀请码并完成注册（可能再导航一次，幂等）。
   await registerNewUser(page);
 });
 
