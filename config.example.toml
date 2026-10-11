@@ -40,7 +40,9 @@ max_bytes = "REPLACE_ME"
 
 [server]
 bind = "0.0.0.0:8080"
-cookie_secure = false
+# 生产必须 true：即使后端容器只听 HTTP（TLS 由 Traefik/Swarm 网关终结），
+# 浏览器也只在 HTTPS 下回送 Secure Cookie。仅本地 HTTP 直连开发或 e2e 才改为 false。
+cookie_secure = true
 static_dir = ""
 
 [database]

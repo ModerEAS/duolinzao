@@ -50,6 +50,8 @@ set("dish_image", "dir", `"${process.env.DLZ_IMAGE_DIR}"`);
 set("dish_image", "max_bytes", '"2097152"');
 set("server", "bind", `"${process.env.DLZ_BIND}"`);
 set("server", "static_dir", `"${process.env.DLZ_STATIC_DIR}"`);
+// e2e 走 http://localhost 明文，Secure Cookie 发不出来；生产模板默认 true，这里显式 false。
+set("server", "cookie_secure", 'false');
 set("database", "url", `"${process.env.DLZ_DB_URL}"`);
 if (text.includes('"REPLACE_ME"')) throw new Error("测试配置里还有 REPLACE_ME");
 fs.writeFileSync(process.env.DLZ_CONFIG_OUT, text);

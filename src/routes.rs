@@ -1,8 +1,10 @@
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
+use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use tower_http::set_header::SetResponseHeaderLayer;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::NaiveDate;
 use serde::Deserialize;
@@ -15,6 +17,31 @@ use crate::error::AppError;
 use crate::extract::{ClientIp, CurrentUser, UserAgent};
 use crate::ops::{admin, catalog, meal, session};
 use crate::state::AppState;
+
+/// 写操作第二道闸：状态变更方法必须带自定义头，证明是同源 JS 发起。
+/// GET/HEAD/OPTIONS 直接放行（覆盖纯静态资源与健康检查）；
+/// 其余方法一律要求 `X-DLZ-Requested: 1`，包括登录/注册等无会话端点——前端已统一带上。
+async fn csrf_guard(request: Request, next: Next) -> Result<Response, AppError> {
+    let unsafe_method = matches!(
+        *request.method(),
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    );
+    if unsafe_method {
+        let ok = request
+            .headers()
+            .get("x-dlz-requested")
+            .and_then(|value| value.to_str().ok())
+            == Some("1");
+        if !ok {
+            return Err(AppError::new(
+                StatusCode::FORBIDDEN,
+                "csrf_required",
+                "缺少 CSRF 校验头",
+            ));
+        }
+    }
+    Ok(next.run(request).await)
+}
 
 pub fn router(state: AppState) -> Router {
     let limit = state.config.dish_image_max_bytes as usize + 65_536;
@@ -104,6 +131,26 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/exports", post(export_zip))
         .layer(DefaultBodyLimit::max(limit))
         .layer(TraceLayer::new_for_http())
+        // CSRF 闸 + 安全响应头（后加的 layer 包在外层，拒绝响应也带安全头）。
+        // CSP 保守：脚本限同源，样式允许内联（Element Plus 动态样式需要），不破坏现有 Vue 应用。
+        .layer(middleware::from_fn(csrf_guard))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; base-uri 'self'; frame-ancestors 'self'; \
+                 img-src 'self' data: blob:; font-src 'self' data:; \
+                 style-src 'self' 'unsafe-inline'; script-src 'self'; \
+                 connect-src 'self'; object-src 'none'",
+            ),
+        ))
         .with_state(state.clone());
     if let Some(dir) = state.config.static_dir.clone() {
         let index = format!("{dir}/index.html");

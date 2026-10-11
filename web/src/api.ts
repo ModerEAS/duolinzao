@@ -16,6 +16,8 @@ export function setUnauthorized(handler: () => void) {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
+  // 写操作 CSRF 第二道闸：同源 JS 标记，浏览器跨站表单带不上该头。
+  headers.set("x-dlz-requested", "1");
   if (init.body && !(init.body instanceof FormData) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -33,7 +35,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blob> {
-  const response = await fetch(path, { ...init, credentials: "include" });
+  const headers = new Headers(init.headers);
+  headers.set("x-dlz-requested", "1");
+  const response = await fetch(path, { ...init, headers, credentials: "include" });
   if (!response.ok) {
     const text = await response.text();
     let message = "请求失败";

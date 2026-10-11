@@ -40,6 +40,10 @@ docker compose up               # Postgres 旁路 + app（静态前端由 app �
 
 `config.docker.example.toml` 与 `config.example.toml` 相同，只把主机名和路径换成容器里的：`database.url` 用 `db`，`static_dir=/app/static`，餐品图片在 `duolinzao-images` 卷里（容器以 nobody 运行，镜像已把该目录的属主交给它）。只需要数据库时：`docker compose up db`。
 
+生产 Cookie（Swarm + Traefik）：`server.cookie_secure` 保持 `true`。TLS 在 Traefik 终结、后端容器只听 HTTP 也没关系——浏览器只看自己访问的是不是 HTTPS，照样回送 Secure Cookie。仅本地 HTTP 直连开发或 e2e（`http://localhost` 明文）时才改为 `false`；缺省即 `true`。
+
+写接口 CSRF 第二道闸：所有 POST/PUT/PATCH/DELETE 必须带请求头 `X-DLZ-Requested: 1`（前端 `api()`/`apiBlob()` 已统一带上），缺头返回 403 `csrf_required`。GET/HEAD/OPTIONS 不受影响；登录/注册等无会话端点同样要求该头，无豁免。
+
 前端在 `web/`。开发时 Vite 把 `/api` 代理到 `127.0.0.1:8080`：
 
 ```bash

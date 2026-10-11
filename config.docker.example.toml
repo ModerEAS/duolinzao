@@ -41,7 +41,9 @@ max_bytes = "2097152"
 
 [server]
 bind = "0.0.0.0:8080"
-cookie_secure = false
+# 生产（Swarm + Traefik 网关终结 HTTPS，后端容器只听 HTTP）必须 true；
+# 浏览器只在 HTTPS 下回送 Secure Cookie，后端是否为 HTTP 不影响。
+cookie_secure = true
 static_dir = "/app/static"
 
 [database]

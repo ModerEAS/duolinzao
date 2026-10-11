@@ -77,6 +77,8 @@ impl Api {
         ip: Option<SocketAddr>,
     ) -> Resp {
         let mut builder = Request::builder().method(method).uri(uri);
+        // 与前端 api() 一致：所有请求都带 CSRF 标记头。
+        builder = builder.header("x-dlz-requested", "1");
         if let Some(token) = token {
             builder = builder.header("cookie", format!("dlz_session={token}"));
         }
@@ -120,6 +122,7 @@ impl Api {
         let request = Request::builder()
             .method("POST")
             .uri(uri)
+            .header("x-dlz-requested", "1")
             .header("cookie", format!("dlz_session={token}"))
             .header(
                 "content-type",
@@ -2096,5 +2099,63 @@ async fn phase1_acceptance() {
         .await,
         StatusCode::BAD_REQUEST,
         "old password rejected",
+    );
+}
+
+#[tokio::test]
+async fn csrf_gate_and_security_headers() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+
+    // 写操作缺头应拒绝：走无需会话的注册接口做探针。
+    let bare = Request::builder()
+        .method("POST")
+        .uri("/api/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"username": "x", "invite_code": "y", "password": "z"})).unwrap(),
+        ))
+        .unwrap();
+    let response = api.app.clone().oneshot(bare).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"], "csrf_required");
+
+    // 带头则放行到业务层（邀请码无效，应是业务错误而非 403）。
+    let res = api
+        .call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "x", "invite_code": "nope", "password": "password-1"})),
+            None,
+            None,
+        )
+        .await;
+    assert_ne!(res.status, StatusCode::FORBIDDEN, "带头不应被 CSRF 闸拦: {}", res.json());
+
+    // 读操作不受影响；响应应带安全头。
+    let bare = Request::builder()
+        .method("GET")
+        .uri("/api/health")
+        .body(Body::empty())
+        .unwrap();
+    let response = api.app.clone().oneshot(bare).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(
+        headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("缺少 CSP");
+    assert!(csp.contains("default-src 'self'"), "{csp}");
+    assert!(csp.contains("frame-ancestors 'self'"), "{csp}");
+    assert!(
+        headers.get("referrer-policy").is_some(),
+        "缺少 Referrer-Policy"
     );
 }
