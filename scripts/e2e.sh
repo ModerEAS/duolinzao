@@ -71,10 +71,14 @@ curl -fsS "$BASE_URL/api/health" >/dev/null || {
 [ "$started" = 1 ] || echo "复用 $BASE_URL 上已运行的服务"
 
 # 3. 预置食堂 + 邀请码（库内存哈希 sha256 hex）。
+CANTEEN2=${DLZ_E2E_CANTEEN2:-二食堂}
 HASH=$(node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$INVITE_CODE")
 psql "$DB_URL" -v ON_ERROR_STOP=1 \
-  -v canteen="$CANTEEN" -v hash="$HASH" -v super_user=root \
+  -v canteen="$CANTEEN" -v canteen2="$CANTEEN2" -v hash="$HASH" -v super_user=root \
   -f e2e/seed.sql
+
+# 3b. 角色与渠道：二食堂兜底 + 本地脚本 LLM 渠道 + canteen/admin 账号与分配（走真实 API，幂等）。
+DLZ_BASE_URL="$BASE_URL" node e2e/setup-roles.mjs
 
 # 4. 由 features/*.feature 生成用例（@wip 默认不生成），再跑浏览器测试。
 cd e2e

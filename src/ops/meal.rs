@@ -240,7 +240,7 @@ pub async fn put_meal(
         return Err(AppError::new(
             axum::http::StatusCode::FORBIDDEN,
             "meal_locked",
-            "该餐已锁定",
+            "该餐已锁定，仅管理员或总管可在范围内改单",
         ));
     }
     if ordering {
