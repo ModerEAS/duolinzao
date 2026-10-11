@@ -40,12 +40,17 @@ When("从选择班制进入「用描述生成模板」并提交班制描述", as
   await page.getByRole("button", { name: "用描述生成模板" }).click();
   await page.getByPlaceholder("描述你的班制").fill("上二休四");
   await page.locator('input[type="date"]').fill("2025-01-06");
+  await expect(page.getByText("按总管理已保存的全站渠道顺序生成，并写入个人模板。")).toBeVisible();
   await page.getByRole("button", { name: "生成并预览" }).click();
   await expect(page.getByText("绿色是报餐，橙色是不报。")).toBeVisible({ timeout: 15000 });
 });
 
 Then("系统按全站渠道顺序调用统一生成接口", async ({ page }) => {
+  // 生成页才有渠道顺序说明：从预览返回重进，确认走的是统一生成入口。
+  await page.locator(".van-nav-bar__left").click();
+  await page.getByRole("button", { name: "用描述生成模板" }).click();
   await expect(page.getByText("按总管理已保存的全站渠道顺序生成，并写入个人模板。")).toBeVisible();
+  await expect(page.getByPlaceholder("描述你的班制")).toBeVisible();
 });
 
 Then("生成结果写入该用户的个人 DSL", async ({ page }) => {
@@ -218,18 +223,27 @@ When("打开评分页对该餐菜、饭、汤分别打 −2 到 2 分", async ({
   await openTab(page, "评分");
   await page.locator('.filters input[type="date"]').fill(scoreDate);
   await page.getByRole("button", { name: "午餐", exact: true }).click();
-  for (const kind of ["菜", "饭", "汤"] as const) {
+  // 先给饭/汤打分；菜留在下一步连评语一起提交。非活跃页签下的菜品是隐藏的，只取可见的。
+  for (const kind of ["饭", "汤"] as const) {
     await page.locator(".van-tab", { hasText: kind }).click();
-    const dish = page.locator("article.panel.dish").first();
+    const dish = page.locator("article.panel.dish:visible").first();
     await expect(dish).toBeVisible({ timeout: 10000 });
     await dish.getByRole("button", { name: "2", exact: true }).click();
-    if (kind === "菜") {
-      await dish.getByPlaceholder("可选评语，随这条评分一起提交").fill("分量足，匿名评");
-      await dish.getByText("匿名，管理端不展示账号").click();
-    }
     await dish.getByRole("button", { name: "提交" }).click();
     await expect(dish.getByText("已评分，不能再改")).toBeVisible({ timeout: 10000 });
   }
+});
+
+When("可选填写不超过 {int} 字的匿名评语挂在对应餐品上", async ({ page }, maxWords: number) => {
+  expect(maxWords).toBe(300);
+  await page.locator(".van-tab", { hasText: "菜" }).click();
+  const dish = page.locator("article.panel.dish:visible").first();
+  await expect(dish).toBeVisible({ timeout: 10000 });
+  await dish.getByRole("button", { name: "2", exact: true }).click();
+  await dish.getByPlaceholder("可选评语，随这条评分一起提交").fill("分量足，匿名评");
+  await dish.getByText("匿名，管理端不展示账号").click();
+  await dish.getByRole("button", { name: "提交" }).click();
+  await expect(dish.getByText("已评分，不能再改")).toBeVisible({ timeout: 10000 });
 });
 
 Then("评分提交成功", async ({ page }) => {
@@ -295,6 +309,9 @@ async function bindPasskey(page: Page, name: string) {
     return { status: res.status, body: await res.json() };
   });
   expect(started.status).toBe(200);
+  // 注册 start 返回双层 publicKey.publicKey（webauthn_rs CreationChallengeResponse 自带一层）。
+  const options = (started.body.publicKey as any)?.publicKey ?? started.body.publicKey;
+  expect(options?.challenge).toBeTruthy();
   const finished = await page.evaluate(
     async ({ challengeId, publicKey, label }) => {
       const enc = (s: string) => {
@@ -335,7 +352,7 @@ async function bindPasskey(page: Page, name: string) {
       });
       return { status: res.status, body: await res.text() };
     },
-    { challengeId: started.body.challenge_id, publicKey: started.body.publicKey, label: name },
+    { challengeId: started.body.challenge_id, publicKey: options, label: name },
   );
   expect(finished.status).toBe(200);
 }
@@ -347,7 +364,7 @@ Given("员工已在设备 A 登录", async ({ page }) => {
 When("打开设备与 Passkey 页", async ({ page }) => {
   await openTab(page, "我的");
   await page.getByText("设备与 Passkey", { exact: true }).click();
-  await expect(page.getByText("待确认")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "待确认" })).toBeVisible();
 });
 
 Then("可查看本账号设备、踢掉设备、解绑 Passkey", async ({ page }) => {
@@ -372,15 +389,19 @@ Then("可查看本账号设备、踢掉设备、解绑 Passkey", async ({ page }
   await openTab(page, "我的");
   await page.getByText("设备与 Passkey", { exact: true }).click();
   const kicks = page.getByRole("button", { name: "踢下线" });
-  expect(await kicks.count()).toBeGreaterThanOrEqual(2);
-  await kicks.last().click();
+  // 设备列表是异步加载的，轮询等到两台都出现。
+  await expect(async () => {
+    expect(await kicks.count()).toBeGreaterThanOrEqual(2);
+  }).toPass({ timeout: 15000 });
+  // 列表按创建时间倒序：第一个是刚登录的 B（旧行只剩已结束会话，不能拿 last）。
+  await kicks.first().click();
   await page.getByRole("button", { name: "确认" }).click();
   // B 会话结束，A 仍在。
   await expect(async () => {
     const r = await pageB!.request.get("/api/me");
     expect(r.status()).toBe(401);
   }).toPass({ timeout: 15000 });
-  await expect(page.getByText("待确认")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "待确认" })).toBeVisible();
   // 本机绑定一枚 Passkey 再解绑（虚拟认证器，真仪式）。
   await bindPasskey(page, "e2e-设备A");
   await page.reload();
