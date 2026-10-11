@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "bddgen": "bddgen",
+    "test": "bddgen && playwright test"
   },
   "devDependencies": {
+    "playwright-bdd": "^9.2.1",
     "@playwright/test": "^1.56.0"
   }
 }

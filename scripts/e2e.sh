@@ -76,6 +76,7 @@ psql "$DB_URL" -v ON_ERROR_STOP=1 \
   -v canteen="$CANTEEN" -v hash="$HASH" -v super_user=root \
   -f e2e/seed.sql
 
-# 4. 浏览器测试。失败时 Playwright 把截图 / trace / 报告留在 e2e/。
+# 4. 由 features/*.feature 生成用例（@wip 默认不生成），再跑浏览器测试。
 cd e2e
+npx bddgen
 npx playwright test "$@"

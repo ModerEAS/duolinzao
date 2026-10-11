@@ -1,5 +1,6 @@
 # language: zh-CN
 # 对照 docs/requirements-phase1.md §1–§3、§5、§7、§9、§11.11–§11.16
+@wip
 功能: 总管主路径
   作为总管理（super_admin）
   我想初始化食堂与角色、配置全局项并处理找回与导出审计
