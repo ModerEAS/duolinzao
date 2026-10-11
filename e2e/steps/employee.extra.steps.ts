@@ -190,8 +190,16 @@ Given("员工已报过某一餐且该餐已发生", async ({ page }) => {
   const me = await page.request.get("/api/me").then((r) => r.json());
   const s = await rootSession();
   const c1 = await canteenIdByName(s, canteen);
-  const dishes = await ensureDishes(s, c1, "score");
-  scoreDishIds = [...dishes.菜, ...dishes.饭, ...dishes.汤];
+  // 每轮建三道新菜并只选它们：旧轮次的已评分菜会挡住 UI（已评分不可再改）。
+  scoreDishIds = [];
+  for (const kind of ["菜", "饭", "汤"]) {
+    const created = await s.call(`/api/canteens/${c1}/dishes`, {
+      method: "POST",
+      body: { name: `aa${kind}${Date.now()}`, kind, taste_tags: [], enabled: true },
+    });
+    expect(created.status).toBe(201);
+    scoreDishIds.push(created.json.id);
+  }
   // 当餐选定含这三道（评分只给选定里的菜）。
   await ensureSelection(s, c1, scoreDate, scoreSlot, scoreDishIds);
   // 已报（锁定餐走管理接口写入，以昨日午餐保证已发生）。

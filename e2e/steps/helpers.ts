@@ -52,6 +52,8 @@ export async function registerNewUser(page: Page) {
 // 保证已登录：优先用本轮已注册账号（文件共享，跨进程），
 // 登录不上（单独跑某场景、旧账号不可用）则现场注册。套件里只有注册场景消费邀请码。
 export async function ensureLoggedIn(page: Page) {
+  // 先清会话：同一 page 可能还登着 canteen/admin（跨角色断言场景），不清就找不到登录入口。
+  await page.context().clearCookies();
   const saved = currentUser || readSharedUser();
   if (saved) {
     currentUser = saved;

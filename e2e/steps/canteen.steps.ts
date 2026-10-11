@@ -188,7 +188,8 @@ When("从菜谱列表打开菜品表单的新建态", async ({ page }) => {
 
 When("填写名称、必填类别（菜或饭或汤）、可选口味标签与可选图片", async ({ page }) => {
   await page.getByPlaceholder("请输入菜品名称").fill(`e2e菜${Date.now()}`);
-  await page.getByRole("radio", { name: "菜" }).click();
+  // el-radio 真 input 被 span 盖住点不到，点外层 label（仅表单内这一个单选组）。
+  await page.locator('.form-card label:has(input[value="菜"])').click();
   await page.getByPlaceholder("添加").fill("微辣");
   await page.getByRole("button", { name: "+ 添加" }).click();
   // 图片可选：不上传。
@@ -204,7 +205,8 @@ Then("菜品创建为启用", async ({ page }) => {
 });
 
 Then("新建与编辑是同一页的两种状态", async ({ page }) => {
-  await page.getByRole("button", { name: "编辑" }).first().click();
+  // 限定表格行：侧栏也有「编辑菜」按钮，hasText 会撞上。
+  await page.locator(".el-table__row").first().getByRole("button", { name: "编辑" }).click();
   await expect(page.getByText("菜谱 / 编辑菜")).toBeVisible();
 });
 
@@ -220,12 +222,14 @@ When("打开该菜的编辑态", async ({ page }) => {
   await page.locator(".canteen-row .el-select").click();
   await page.getByRole("option", { name: canteen }).click();
   await openSide(page, "菜谱");
-  await page.getByRole("button", { name: "编辑" }).first().click();
+  // 挑一行仍在启用的菜（多轮跑会留下已停用的行，那行没有停用按钮）。
+  await page.locator(".el-table__row", { hasText: "已启用" }).first().getByRole("button", { name: "编辑" }).click();
   await expect(page.getByText("菜谱 / 编辑菜")).toBeVisible();
 });
 
 When("修改名称或类别或口味标签或图片", async ({ page }) => {
-  const nameInput = page.locator('.form-card input[type="text"]').first();
+  // 第一个文本框是所属食堂下拉（readonly），跳过它取名称框。
+  const nameInput = page.locator('.form-card input[type="text"]:not([readonly])').first();
   await nameInput.fill(`${(await nameInput.inputValue()) || "e2e菜"}改`);
   await page.getByPlaceholder("添加").fill("开胃");
   await page.getByRole("button", { name: "+ 添加" }).click();
@@ -238,12 +242,13 @@ When("选择停用并确认后保存", async ({ page }) => {
 });
 
 Then("变更生效", async ({ page }) => {
-  await expect(page.getByText(/已停用|已保存/)).toBeVisible({ timeout: 10000 });
+  // disable() 内自动保存：等成功 toast（表格里旧行的已停用太多，不拿它断言）。
+  await expect(page.locator(".el-message", { hasText: "已保存" })).toBeVisible({ timeout: 10000 });
 });
 
 Then("强提醒不能代替这次确认，也不能自动停用", async ({ page }) => {
   await openSide(page, "强提醒");
-  await expect(page.getByText("系统不自动下架")).toBeVisible();
+  await expect(page.getByText("系统不自动下架").first()).toBeVisible();
 });
 
 // 场景：选菜优化周视图与当餐勾选立即保存
@@ -308,14 +313,15 @@ Then("口味标签只作展示不参与排序", async ({ page }) => {
 
 When("使用保存并前进", async ({ page }) => {
   // UI 按钮名为「下一餐」，即 Gherkin 的保存并前进（当前餐已自动保存）。
-  await page.getByRole("radio", { name: "早" }).click();
+  await page.locator('label:has(input[value="breakfast"])').click();
   await page.getByRole("button", { name: "下一餐" }).click();
 });
 
 Then("早餐前进到同日午餐，午餐到同日晚餐，晚餐到下一日早餐", async ({ page }) => {
-  await expect(page.getByRole("radio", { name: "中" })).toBeVisible();
-  const lunch = page.getByRole("radio", { name: "中" });
-  await expect(lunch).toHaveClass(/active|is-active|checked|selected/);
+  // 选中态在 label 上（is-active），不在被盖住的真 input 上。
+  await expect(page.locator('label:has(input[value="lunch"])')).toHaveClass(/is-active/, {
+    timeout: 10000,
+  });
 });
 
 Then("周日晚餐前进到下一周周一早餐", async () => {
@@ -337,9 +343,14 @@ Given("某菜样本量足够且可见均分低于总管配置的阈值", async (
     method: "PUT",
     body: { mean_threshold: 1.0, min_samples: 1 },
   });
-  const dishes = await ensureDishes(s, c1, "alert");
+  // 建一道全新菜：复用旧菜会混入旧轮次分数，均分不可控。
+  const fresh = await s.call(`/api/canteens/${c1}/dishes`, {
+    method: "POST",
+    body: { name: `alert${Date.now()}`, kind: "菜", taste_tags: ["酸"], enabled: true },
+  });
+  expect(fresh.status).toBe(201);
   const date = addDaysStr(shanghaiToday(), -1);
-  await ensureSelection(s, c1, date, "lunch", [dishes.菜[0]]);
+  await ensureSelection(s, c1, date, "lunch", [fresh.json.id]);
   const inv = await s.call("/api/admin/invites", { method: "POST" });
   const u = uniqueTag("al_");
   await fetch(`${baseURL}/api/register`, {
@@ -352,10 +363,10 @@ Given("某菜样本量足够且可见均分低于总管配置的阈值", async (
   await adminOverride(s, await accountIdByName(s, u), date, "lunch", true, c1);
   const sc = await emp.call("/api/scores", {
     method: "POST",
-    body: { meal_date: date, slot: "lunch", dish_id: dishes.菜[0], value: -2, comment: null, anonymous: true },
+    body: { meal_date: date, slot: "lunch", dish_id: fresh.json.id, value: -2, comment: null, anonymous: true },
   });
-  expect([201, 409]).toContain(sc.status);
-  alertDish = dishes.菜[0];
+  expect(sc.status).toBe(201);
+  alertDish = fresh.json.id;
 });
 
 When("打开强提醒页", async ({ page }) => {
@@ -371,7 +382,8 @@ Then("看到该菜的提醒（名称、类别、样本量、均分、阈值、�
   const c1 = await canteenIdByName(s, canteen);
   const r = await c.call(`/api/canteens/${c1}/alerts`);
   expect(r.status).toBe(200);
-  const items = [...(r.json.菜 ?? []), ...(r.json.饭 ?? []), ...(r.json.汤 ?? [])];
+  const groups = r.json.groups ?? {};
+  const items = [...(groups.菜 ?? []), ...(groups.饭 ?? []), ...(groups.汤 ?? [])];
   expect(items.length).toBeGreaterThan(0);
   // 还原阈值，避免影响其它场景。
   await s.call("/api/admin/settings/score-alert", {
@@ -399,7 +411,7 @@ When("真正停用时", async ({ page }) => {
 });
 
 Then("必须进入菜品表单编辑态并显式确认", async ({ page }) => {
-  await page.getByRole("button", { name: "编辑" }).first().click();
+  await page.locator(".el-table__row").first().getByRole("button", { name: "编辑" }).click();
   await expect(page.getByText("须显式确认；强提醒不会自动停用")).toBeVisible();
 });
 
@@ -505,7 +517,7 @@ Then("可查看本账号设备与 Passkey、踢设备、解绑 Passkey", async (
   for (const col of ["友好名称", "UA", "IP"]) {
     await expect(page.getByText(col, { exact: true }).first()).toBeVisible();
   }
-  await expect(page.getByText("Passkey")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Passkey" })).toBeVisible();
 });
 
 Then("可对本账号待确认登录允许或拒绝", async ({ page }) => {
@@ -529,7 +541,7 @@ Then("不能按食堂范围批准他人设备", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: u }),
   });
-  expect(created.status).toBe(200);
+  expect(created.status).toBe(201);
   const { id } = await created.json();
   const c = await loginSession(canteenUser, canteenPass);
   const r = await c.call(`/api/login-approvals/${id}/allow`, { method: "POST" });
