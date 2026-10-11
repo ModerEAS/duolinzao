@@ -76,6 +76,7 @@ Given("员工已有个人 DSL", async ({ page }) => {
   let body = await res.json();
   if (!body.id) {
     const gen = await page.request.post("/api/meal-templates/generate", {
+      headers: { "x-dlz-requested": "1" },
       data: { description: "上二休四", anchor_date: "2025-01-06" },
     });
     expect(gen.status()).toBe(200);
@@ -158,6 +159,7 @@ Given("该日三餐已按北京时间提前一天的固定时点锁定", async (
   const s = await rootSession();
   const c1 = await canteenIdByName(s, canteen);
   const r = await page.request.put(`/api/meals/${lockedDate}/${lockedSlot}`, {
+    headers: { "x-dlz-requested": "1" },
     data: { ordering: false, canteen_id: c1 },
   });
   expect(r.status()).toBe(403);
@@ -170,6 +172,7 @@ When("员工尝试修改该餐", async ({ page }) => {
   const s = await rootSession();
   const c1 = await canteenIdByName(s, canteen);
   const r = await page.request.put(`/api/meals/${lockedDate}/${lockedSlot}`, {
+    headers: { "x-dlz-requested": "1" },
     data: { ordering: false, canteen_id: c1 },
   });
   lockAttempt = { status: r.status(), body: JSON.stringify(await r.json()) };
@@ -265,6 +268,7 @@ Then("不可只写评语不打分", async ({ page }) => {
   const ids = [...targets.groups.菜, ...targets.groups.饭, ...targets.groups.汤].map((d: any) => d.dish_id);
   await ensureSelection(s, c1, scoreDate, scoreSlot, [...ids, dishId]);
   const r = await page.request.post("/api/scores", {
+    headers: { "x-dlz-requested": "1" },
     data: { meal_date: scoreDate, slot: scoreSlot, dish_id: dishId, value: null, comment: "只有评语", anonymous: true },
   });
   expect(r.status()).toBe(400);
