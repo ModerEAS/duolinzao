@@ -48,6 +48,39 @@ impl Clock for ManualClock {
     }
 }
 
+// 测试时钟：生产 clock，平常与系统钟一致，仅测试环境入口可拨偏置。
+// 后端所有锁单/评分窗判断都走 state.clock.now()，拨钟即拨业务时间。
+// 入口见 routes::test_clock_*，无 DLZ_ALLOW_TEST_CLOCK=1 时 404。
+pub struct OverrideClock {
+    now: Mutex<Option<DateTime<Utc>>>,
+}
+
+impl OverrideClock {
+    pub fn new() -> Self {
+        Self { now: Mutex::new(None) }
+    }
+
+    pub fn set(&self, now: Option<DateTime<Utc>>) {
+        *self.now.lock().expect("clock") = now;
+    }
+
+    pub fn get(&self) -> Option<DateTime<Utc>> {
+        *self.now.lock().expect("clock")
+    }
+}
+
+impl Default for OverrideClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for OverrideClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.get().unwrap_or_else(Utc::now)
+    }
+}
+
 #[async_trait]
 pub trait Mailer: Send + Sync {
     async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), String>;
@@ -289,6 +322,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: std::sync::Arc<AppConfig>,
     pub clock: std::sync::Arc<dyn Clock>,
+    pub test_clock: std::sync::Arc<OverrideClock>,
     pub mailer: std::sync::Arc<dyn Mailer>,
     pub templates: std::sync::Arc<dyn TemplateBackend>,
     pub webauthn: std::sync::Arc<Webauthn>,
@@ -308,6 +342,7 @@ impl AppState {
             pool,
             config: std::sync::Arc::new(config),
             clock,
+            test_clock: std::sync::Arc::new(OverrideClock::new()),
             mailer,
             templates,
             webauthn: std::sync::Arc::new(webauthn),
@@ -319,13 +354,12 @@ impl AppState {
         let mailer: std::sync::Arc<dyn Mailer> = std::sync::Arc::new(SmtpMailer::new(&config));
         let templates: std::sync::Arc<dyn TemplateBackend> =
             std::sync::Arc::new(HttpTemplateBackend::new());
-        Self::new(
-            pool,
-            config,
-            std::sync::Arc::new(SystemClock),
-            mailer,
-            templates,
-        )
+        // 生产 clock 即测试时钟载体：未拨时行为与系统钟完全一致。
+        let test_clock = std::sync::Arc::new(OverrideClock::new());
+        let clock: std::sync::Arc<dyn Clock> = test_clock.clone();
+        let mut state = Self::new(pool, config, clock, mailer, templates)?;
+        state.test_clock = test_clock;
+        Ok(state)
     }
 }
 
