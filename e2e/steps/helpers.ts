@@ -95,9 +95,85 @@ export async function ensureAdmin(page: Page) {
   await expect(page.locator(".side")).toBeVisible({ timeout: 10000 });
 }
 
+// 跨 feature 共享的背景状态：canteen/admin 的「该账号已登录横屏工作台」文本相同，
+// 由前置的范围步骤决定角色，单个定义分支登录，避免 bddgen 重复定义。
+export const bgRole: { name: string } = { name: "" };
+
+// 跨 feature 共享的拒绝断言：「修改被拒绝」在 admin/employee 文本相同，
+// 由各自的 When 写入状态，单个定义断言，避免重复定义。
+export const lastDenial: { status: number } = { status: 0 };
+
+// 定长唯一名：毫秒时间戳 + 两位进程内计数。同长字符串之间子串即相等，
+// 表格行的 hasText 定位不再撞到其它行；用户名重复注册也不会冲突。
+let tagSeq = 0;
+export function uniqueTag(prefix: string): string {
+  tagSeq = (tagSeq + 1) % 100;
+  return `${prefix}${Date.now()}${tagSeq.toString().padStart(2, "0")}`;
+}
+
 // 点击横屏左侧栏（App.vue .side .nav-btn）。
 export async function openSide(page: Page, label: string) {
   await page.locator(".side").getByRole("button", { name: label }).click();
+}
+
+// 改单页行内翻转：点「改为…」后轮询接口直到翻转，最多点 3 次（表格重渲染可能吞掉一次点击）。
+export async function flipOverrideRow(
+  page: Page,
+  username: string,
+  date: string,
+  slot: string,
+  canteenId: string,
+  accountId: string,
+): Promise<void> {
+  const row = page.locator(".el-table__row", { hasText: username }).first();
+  await expect(row).toBeVisible({ timeout: 15000 });
+  await row.scrollIntoViewIfNeeded();
+  const btn = row.getByRole("button", { name: /改为/ });
+  const label = (await btn.textContent()) ?? "";
+  const wantOrdering = !label.includes("不报");
+  const check = async () => {
+    const s = await rootSession();
+    const list = await s.call(`/api/admin/meals?date=${date}&canteen_id=${canteenId}`);
+    const found = (list.json.items ?? []).find(
+      (x: any) => x.account_id === accountId && x.slot === slot,
+    );
+    expect(found?.ordering).toBe(wantOrdering);
+  };
+  for (let i = 0; i < 3; i += 1) {
+    // 日历浮层偶发盖住行内按钮：先 Escape，真点击超短时就对同一按钮派发点击（同一 handler）。
+    await page.keyboard.press("Escape");
+    try {
+      await btn.click({ timeout: 8000 });
+    } catch {
+      await btn.dispatchEvent("click");
+    }
+    try {
+      await expect(check).toPass({ timeout: 5000 });
+      return;
+    } catch {
+      // 没翻转就再点一次。
+    }
+  }
+  await expect(check).toPass({ timeout: 5000 });
+}
+
+// 改单页的日期选择器：先关残留下拉层，再打字 + 回车提交，确认值已落定。
+export async function pickAdminDate(page: Page, date: string) {
+  await page.keyboard.press("Escape");
+  // 注意：el-date-picker 渲染根 class 是 el-date-editor，不是 el-date-picker。
+  const input = page.locator(".el-date-editor input").first();
+  await expect(input).toBeVisible({ timeout: 15000 });
+  // 不经过聚焦（聚焦会弹开日历浮层盖住表格）：直接设值并派发 input/change，走同一 v-model 链路。
+  await input.evaluate(
+    (el, v) => {
+      const target = el as HTMLInputElement;
+      target.value = v;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    date,
+  );
+  await expect(input).toHaveValue(date, { timeout: 10000 });
 }
 
 // 保证已绑定至少一个食堂（已绑定则跳过，避免重复点导致反选解绑）。

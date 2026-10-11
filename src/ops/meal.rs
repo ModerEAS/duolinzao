@@ -384,7 +384,28 @@ pub async fn admin_put_meal(
     if meal_is_locked(date, state.config.lock_time, now) {
         persist_lock_if_needed(state, date).await?;
     }
-    upsert_order(state, account_id, date, slot, canteen_id, ordering, "admin").await?;
+    // 管理员改单已在上文鉴权（meal.admin_override + 食堂范围），这里必须能复写已锁定的行。
+    // upsert_order 的 WHERE locked_at IS NULL 是防员工/任务写锁单，不能挡管理员，所以这里直写。
+    sqlx::query(
+        r#"
+        INSERT INTO meal_order (account_id, meal_date, slot, canteen_id, ordering, source, submitted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (account_id, meal_date, slot) DO UPDATE
+        SET canteen_id = EXCLUDED.canteen_id,
+            ordering = EXCLUDED.ordering,
+            source = EXCLUDED.source,
+            submitted_at = EXCLUDED.submitted_at
+        "#,
+    )
+    .bind(account_id)
+    .bind(date)
+    .bind(slot)
+    .bind(canteen_id)
+    .bind(ordering)
+    .bind("admin")
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
     if meal_is_locked(date, state.config.lock_time, now) {
         sqlx::query(
             r#"
