@@ -7,19 +7,29 @@ services:
       POSTGRES_DB: duolinzao
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duolinzao"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     volumes:
       - duolinzao-pg:/var/lib/postgresql/data
 
   app:
+    # 镜像名全小写，与 CI 推的 GHCR 一致；本地 docker compose build 也能用。
+    image: ghcr.io/moderras/duolinzao:latest
     build: .
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       DUOLINZAO_CONFIG: /config/config.toml
     volumes:
-      - ./config.toml:/config/config.toml:ro
+      # 先 cp config.docker.example.toml config.docker.toml 并填掉 REPLACE_ME。
+      # 里面的 database.url 指向 db、static_dir=/app/static、图片目录在卷里。
+      - ./config.docker.toml:/config/config.toml:ro
       - duolinzao-images:/var/lib/duolinzao/images
 
 volumes:
