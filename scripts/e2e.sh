@@ -7,6 +7,16 @@ cd "$(dirname "$0")/.."
 
 DB_URL=${DATABASE_URL:-postgres://duolinzao:duolinzao@127.0.0.1:5432/duolinzao}
 PORT=${DLZ_PORT:-8080}
+# 规模化旅程用独立库并每轮重建：拨钟会写入未来时间戳的行（审计按 created_at 倒序取 200），
+# 与默认库混用会把切片用例的新行挤出窗口。独立库即隔离，默认库零影响。
+if [ -n "${DLZ_SCALE:-}" ]; then
+  SCALE_URL=$(DB_URL="$DB_URL" node -e 'const u = new URL(process.env.DB_URL); u.pathname = "/duolinzao_scale"; console.log(u.toString());')
+  psql "$DB_URL" -v ON_ERROR_STOP=1 \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'duolinzao_scale' AND pid <> pg_backend_pid();" \
+    -c "DROP DATABASE IF EXISTS duolinzao_scale" \
+    -c "CREATE DATABASE duolinzao_scale"
+  DB_URL=$SCALE_URL
+fi
 BASE_URL=${DLZ_BASE_URL:-http://localhost:$PORT}
 BIN=${DLZ_BIN:-target/debug/duolinzao}
 INVITE_CODE=${DLZ_E2E_INVITE_CODE:-DLZ-E2E-INVITE}
@@ -58,9 +68,11 @@ fs.writeFileSync(process.env.DLZ_CONFIG_OUT, text);
 JS
 
 # 2. 起 app（若 DLZ_BASE_URL 指向别处，例如 Vite dev server，则跳过）。
+# DLZ_ALLOW_TEST_CLOCK=1 只开给 e2e 栈内的 app：放行 /api/test/clock（仍只认 super_admin），
+# 生产配置（config.*.example.toml / compose）里永不设置。
 started=0
 if [ -z "${DLZ_BASE_URL:-}" ]; then
-  DUOLINZAO_CONFIG=$CONFIG "$BIN" >e2e/app.log 2>&1 &
+  DLZ_ALLOW_TEST_CLOCK=1 DUOLINZAO_CONFIG=$CONFIG "$BIN" >e2e/app.log 2>&1 &
   app_pid=$!
   started=1
   trap 'kill "$app_pid" 2>/dev/null || true' EXIT
@@ -86,7 +98,15 @@ psql "$DB_URL" -v ON_ERROR_STOP=1 \
 # 3b. 角色与渠道：二食堂兜底 + 本地脚本 LLM 渠道 + canteen/admin 账号与分配（走真实 API，幂等）。
 DLZ_BASE_URL="$BASE_URL" node e2e/setup-roles.mjs
 
-# 4. 由 features/*.feature 生成用例（@wip 默认不生成），再跑浏览器测试。
+# 3c. 规模化旅程花名册：DLZ_SCALE=smoke（默认 3 食堂 × 30 员工）/ full（10 × 300）。
+# 未设 DLZ_SCALE 时不生成、不跑 @scale；设了则 bdd 只生成 @scale、timeout 放宽到 30 分钟。
+if [ -n "${DLZ_SCALE:-}" ]; then
+  DLZ_SCALE="$DLZ_SCALE" DLZ_SEED="${DLZ_SEED:-}" node e2e/scale/roster.mjs
+  export DLZ_BDD_TAGS="${DLZ_BDD_TAGS:-@scale}"
+  export DLZ_E2E_TIMEOUT_MS="${DLZ_E2E_TIMEOUT_MS:-1800000}"
+fi
+
+# 4. 由 features/*.feature 生成用例（默认排除 @wip 与 @scale），再跑浏览器测试。
 cd e2e
-npx bddgen
+npx bddgen --tags "${DLZ_BDD_TAGS:-not @wip and not @scale}"
 npx playwright test "$@"

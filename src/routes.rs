@@ -130,6 +130,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/accounts", get(accounts))
         .route("/api/admin/audit", get(audit))
         .route("/api/admin/exports", post(export_zip))
+        // 测试时钟（仅测试环境入口）：拨 T0–T5 切片，不走业务 API 造数据。
+        .route("/api/test/clock", get(get_test_clock).post(set_test_clock))
         .layer(DefaultBodyLimit::max(limit))
         .layer(TraceLayer::new_for_http())
         // CSRF 闸 + 安全响应头（后加的 layer 包在外层，拒绝响应也带安全头）。
@@ -1143,6 +1145,53 @@ async fn accounts(
     user: CurrentUser,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(admin::list_accounts(&state, &user).await?))
+}
+
+// 测试时钟：后端认钟（state.clock 即 test_clock），总管侧拨到 T0–T5 切片。
+// 仅 DLZ_ALLOW_TEST_CLOCK=1 时可用，且只认 super_admin；否则 404/403。
+// 这是时间缝，不是业务 API：不建用户、不报餐、不评分。
+fn test_clock_allowed() -> Result<(), AppError> {
+    if std::env::var("DLZ_ALLOW_TEST_CLOCK").as_deref() == Ok("1") {
+        Ok(())
+    } else {
+        Err(AppError::not_found("test_clock_disabled"))
+    }
+}
+
+async fn get_test_clock(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    test_clock_allowed()?;
+    crate::rbac::authorize(&user.assignments, crate::rbac::Perm::SystemSuper, None)?;
+    Ok(Json(json!({ "now": state.test_clock.get(), "overridden": state.test_clock.get().is_some() })))
+}
+
+#[derive(Deserialize)]
+struct TestClockBody {
+    now: Option<String>,
+    #[serde(default)]
+    clear: bool,
+}
+
+async fn set_test_clock(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<TestClockBody>,
+) -> Result<Json<Value>, AppError> {
+    test_clock_allowed()?;
+    crate::rbac::authorize(&user.assignments, crate::rbac::Perm::SystemSuper, None)?;
+    let next = if body.clear || body.now.as_deref() == Some("") {
+        None
+    } else if let Some(raw) = body.now {
+        let parsed = chrono::DateTime::parse_from_rfc3339(&raw)
+            .map_err(|_| AppError::bad("test_clock_time", "now 需要 RFC3339 时间"))?;
+        Some(parsed.with_timezone(&chrono::Utc))
+    } else {
+        None
+    };
+    state.test_clock.set(next);
+    Ok(Json(json!({ "now": state.test_clock.get() })))
 }
 
 async fn audit(State(state): State<AppState>, user: CurrentUser) -> Result<Json<Value>, AppError> {
