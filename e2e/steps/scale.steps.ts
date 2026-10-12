@@ -144,11 +144,21 @@ When("总管按花名册创建全部食堂", async ({ page }) => {
   await ensureSuper(page);
   const s = await rootSession();
   for (const c of roster().canteens) {
-    await page.getByPlaceholder("新食堂名称").fill(c.name);
-    await page.getByRole("button", { name: "新建食堂" }).click();
-    // 连续新建时旧 toast 未消：只看第一条可见即可。
-    await expect(page.getByText("食堂已建立").first()).toBeVisible({ timeout: 15000 });
-    const id = await canteenIdOf(s, c.name);
+    // 幂等：retry/重跑时同名已存在直接复用（食堂名无唯一约束，不可盲建，否则下拉框重名）。
+    let id: string | null = null;
+    try {
+      id = await canteenIdOf(s, c.name);
+    } catch {
+      id = null;
+    }
+    if (id === null) {
+      await page.getByPlaceholder("新食堂名称").fill(c.name);
+      await page.getByRole("button", { name: "新建食堂" }).click();
+      // 成功信号用输入框被清空：成功分支 await api 落库后才清空；toast 会残留导致误判
+      //（CI 曾 2.4s 误过陈旧 toast，查询跑赢提交报“无食堂”）。
+      await expect(page.getByPlaceholder("新食堂名称")).toHaveValue("", { timeout: 15000 });
+      id = await canteenIdOf(s, c.name);
+    }
     keyToId[c.key] = id;
     keyToName[c.key] = c.name;
   }
@@ -205,22 +215,41 @@ When("总管按花名册挂上管理员及食堂范围", async () => {
   }
 });
 
+async function dishExists(
+  s: Awaited<ReturnType<typeof rootSession>>,
+  canteenId: string,
+  name: string,
+) {
+  const r = await s.call(`/api/canteens/${canteenId}/dishes`);
+  const groups = r.json?.groups ?? {};
+  return KIND_TABS.some((k) => (groups[k] ?? []).some((d: any) => d.name === name));
+}
+
 When("各食堂账号登录并创建本食堂菜饭汤", async ({ page }) => {
+  const s = await rootSession();
   for (const c of roster().canteens) {
     await loginAs(page, c.canteen_user, c.canteen_pass);
     await expect(page.locator(".side")).toBeVisible({ timeout: 15000 });
     await page.locator(".canteen-row .el-select").click();
     await page.getByRole("option", { name: c.name }).click();
     await openSide(page, "菜谱");
+    const canteenId = keyToId[c.key] ?? (await canteenIdOf(s, c.name));
     for (const kind of KIND_TABS) {
       for (const dish of c.dishes[kind] ?? []) {
+        // 幂等：retry 时同名已存在直接跳过，否则一餐选出 8 张卡打爆“已选 4 道”。
+        if (await dishExists(s, canteenId, dish)) continue;
         await page.getByRole("button", { name: "新建菜品" }).click();
         await expect(page.getByText("菜谱 / 新建菜")).toBeVisible();
         await page.getByPlaceholder("请输入菜品名称").fill(dish);
         await page.locator(`.form-card label:has(input[value="${kind}"])`).click();
         await page.getByRole("button", { name: "保存" }).click();
-        await expect(page.getByText("已保存").first()).toBeVisible({ timeout: 10000 });
+        // 落定信号用列表出现该菜名（toast 会残留误判，同食堂创建一节）。
+        // 注意先点对应页签：列表默认停留在“菜”，饭/汤行被过滤不可见。
         await openSide(page, "菜谱");
+        await page.getByRole("tab", { name: kind }).click();
+        await expect(page.locator(".el-table__row", { hasText: dish }).first()).toBeVisible({
+          timeout: 15000,
+        });
       }
     }
   }
@@ -285,6 +314,18 @@ When("花名册中每位员工完成邀请码注册", async ({ page }) => {
   const list = roster().employees;
   for (let i = 0; i < list.length; i += 1) {
     const e = list[i];
+    // 幂等：retry 时已注册直接跳过（撞账号唯一约束）。
+    // 注意：必须用只读查询判存在，绝不能用登录试探——不存在用户的失败登录会记
+    // login_attempt，同 IP 15 分钟超 20 次就 429，后续一切登录雪崩（CI 实锤）。
+    let exists = false;
+    try {
+      const s = await rootSession();
+      await accountIdByName(s, e.user);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (exists) continue;
     await page.context().clearCookies();
     await page.goto("/");
     await page.getByRole("button", { name: "有邀请码，去注册" }).click();
@@ -308,13 +349,21 @@ When("每位员工按花名册绑定食堂并选择班制", async ({ page }) => 
     const want = e.bind_canteen_keys.map((k) => keyToId[k]);
     await openTab(page, "我的");
     await page.getByText("绑定食堂", { exact: true }).click();
-    for (const id of want.filter((id) => !bound.includes(id))) {
+    const missing = want.filter((id) => !bound.includes(id));
+    for (const id of missing) {
       const name = roster().canteens.find((c) => keyToId[c.key] === id)?.name ?? "";
       await page.locator(".van-cell", { hasText: name }).first().click();
     }
-    if (want.some((id) => !bound.includes(id))) {
+    if (missing.length) {
       await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText("已绑定").first()).toBeVisible({ timeout: 10000 });
+      // 落定信号走接口轮询（toast 会残留误判，同食堂创建一节）。
+      await expect(async () => {
+        const ids: string[] = await page.request
+          .get("/api/me/canteens")
+          .then((r) => r.json())
+          .then((b) => (b.items ?? []).map((x: any) => x.id));
+        expect(want.every((id) => ids.includes(id))).toBe(true);
+      }).toPass({ timeout: 15000 });
     }
     // 班制：上二休四。
     await openTab(page, "报餐");
@@ -511,21 +560,26 @@ When("管理员在范围内修改已锁定报餐", async ({ page }) => {
     (x: any) => x.username === e.user && x.slot === SLOT_EN[m.slot],
   );
   expect(row).toBeTruthy();
-  await loginAs(page, a.user, a.pass);
-  await expect(page.locator(".side")).toBeVisible({ timeout: 15000 });
-  await page.locator(".canteen-row .el-select").click();
-  await page.getByRole("option", { name: keyToName[ck] }).click();
-  await openSide(page, "改单");
-  await expect(page.getByText("截止后仅管理员可改")).toBeVisible({ timeout: 15000 });
-  await pickAdminDate(page, target);
-  await flipOverrideRow(
-    page,
-    e.user,
-    target,
-    SLOT_EN[m.slot],
-    keyToId[ck],
-    await accountIdByName(s, e.user),
-  );
+  // 幂等：retry 时若已是翻转态则跳过 UI 翻转（否则来回翻，Then 口径漂移）。
+  // 翻转目标态 = 与花名册 intent 相反。
+  const flipped = !(m.intent === "报");
+  if (row.ordering !== flipped) {
+    await loginAs(page, a.user, a.pass);
+    await expect(page.locator(".side")).toBeVisible({ timeout: 15000 });
+    await page.locator(".canteen-row .el-select").click();
+    await page.getByRole("option", { name: keyToName[ck] }).click();
+    await openSide(page, "改单");
+    await expect(page.getByText("截止后仅管理员可改")).toBeVisible({ timeout: 15000 });
+    await pickAdminDate(page, target);
+    await flipOverrideRow(
+      page,
+      e.user,
+      target,
+      SLOT_EN[m.slot],
+      keyToId[ck],
+      await accountIdByName(s, e.user),
+    );
+  }
 });
 
 Then("范围内改单成功", async () => {
@@ -588,7 +642,6 @@ async function submitRatingUI(page: Page, user: string, pass: string, r: any) {
   await page.locator('.filters input[type="date"]').fill(r.date);
   await page.getByRole("button", { name: SLOT_CN[SLOT_EN[r.slot]], exact: true }).click();
   let commented = false;
-  let actedTotal = 0;
   for (const kind of KIND_TABS) {
     await page.locator(".van-tab", { hasText: kind }).click();
     console.log(`scale T4: ${user} ${r.slot} ${kind} tab`);
@@ -609,14 +662,22 @@ async function submitRatingUI(page: Page, user: string, pass: string, r: any) {
         await dish.getByRole("button", { name: "提交" }).click();
         await expect(dish.getByText("已评分，不能再改")).toBeVisible({ timeout: 10000 });
         acted = true;
-        actedTotal += 1;
         break;
       }
       if (!acted) break;
     }
   }
-  // 该 rating 行至少评出一道：选定缺失时直接失败，不静默跳过。
-  expect(actedTotal, `${user} ${r.date} ${r.slot}`).toBeGreaterThan(0);
+  // 完整性终态校验：该餐选定菜应全已评（当次评出或之前已评均可；选定缺失则失败）。
+  // retry 安全：重跑时无动作也不报错。
+  const tg = await page.request
+    .get(`/api/me/score-targets?date=${r.date}&slot=${SLOT_EN[r.slot]}`)
+    .then((x) => x.json());
+  const dishes = [...tg.groups.菜, ...tg.groups.饭, ...tg.groups.汤];
+  expect(dishes.length, `${user} ${r.date} ${r.slot} 选定为空`).toBeGreaterThan(0);
+  expect(
+    dishes.every((d: any) => d.scored),
+    `${user} ${r.date} ${r.slot} 有未评`,
+  ).toBe(true);
 }
 
 When("已报餐员工按花名册 ratings 在 T4 提交评分与可选评语", async ({ page }) => {
