@@ -244,7 +244,9 @@ When("各食堂账号登录并创建本食堂菜饭汤", async ({ page }) => {
         await page.locator(`.form-card label:has(input[value="${kind}"])`).click();
         await page.getByRole("button", { name: "保存" }).click();
         // 落定信号用列表出现该菜名（toast 会残留误判，同食堂创建一节）。
+        // 注意先点对应页签：列表默认停留在“菜”，饭/汤行被过滤不可见。
         await openSide(page, "菜谱");
+        await page.getByRole("tab", { name: kind }).click();
         await expect(page.locator(".el-table__row", { hasText: dish }).first()).toBeVisible({
           timeout: 15000,
         });
