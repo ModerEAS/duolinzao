@@ -3,7 +3,8 @@ import { defineBddConfig } from "playwright-bdd";
 
 // Gherkin 特性文件住在仓库根 features/（中文，# language: zh-CN），
 // bddgen 把非 @wip 非 @scale 场景生成到 .features-gen/，再由 playwright test 执行。
-// @wip 场景默认不生成、不跑；@scale 旅程体量大，只在 DLZ_SCALE 档位下单独跑，见 e2e/README.md。
+// @wip 场景（LLM、评分、设备/Passkey、食堂/管理/总管横屏等）默认不生成、不跑；
+// @scale 旅程体量大，只在 DLZ_SCALE 档位下单独跑，见 e2e/README.md。
 const testDir = defineBddConfig({
   featuresRoot: "..",
   features: "../features/*.feature",
