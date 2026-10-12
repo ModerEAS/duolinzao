@@ -168,13 +168,14 @@ async function ensureAccount(user: string, pass: string): Promise<string> {
   } catch {
     // 无则走邀请码注册（账号准备，非业务报餐）。
     const inv = await s.call("/api/admin/invites", { method: "POST" });
-    expect(inv.status).toBe(201);
+    expect(inv.status, `mint invite: ${inv.status} ${JSON.stringify(inv.json)}`).toBe(201);
     const reg = await fetch(`${baseURL}/api/register`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: user, invite_code: inv.json.code, password: pass }),
     });
-    expect(reg.status).toBe(201);
+    const regBody = await reg.text();
+    expect(reg.status, `register ${user}: ${reg.status} ${regBody}`).toBe(201);
     return accountIdByName(s, user);
   }
 }
