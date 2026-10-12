@@ -314,10 +314,13 @@ When("花名册中每位员工完成邀请码注册", async ({ page }) => {
   const list = roster().employees;
   for (let i = 0; i < list.length; i += 1) {
     const e = list[i];
-    // 幂等：retry 时已注册（同名同密码能登入）直接跳过，否则撞唯一约束。
+    // 幂等：retry 时已注册直接跳过（撞账号唯一约束）。
+    // 注意：必须用只读查询判存在，绝不能用登录试探——不存在用户的失败登录会记
+    // login_attempt，同 IP 15 分钟超 20 次就 429，后续一切登录雪崩（CI 实锤）。
     let exists = false;
     try {
-      await loginSession(e.user, e.pass);
+      const s = await rootSession();
+      await accountIdByName(s, e.user);
       exists = true;
     } catch {
       exists = false;
