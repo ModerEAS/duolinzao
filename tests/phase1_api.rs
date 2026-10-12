@@ -77,6 +77,8 @@ impl Api {
         ip: Option<SocketAddr>,
     ) -> Resp {
         let mut builder = Request::builder().method(method).uri(uri);
+        // 与前端 api() 一致：所有请求都带 CSRF 标记头。
+        builder = builder.header("x-dlz-requested", "1");
         if let Some(token) = token {
             builder = builder.header("cookie", format!("dlz_session={token}"));
         }
@@ -120,6 +122,7 @@ impl Api {
         let request = Request::builder()
             .method("POST")
             .uri(uri)
+            .header("x-dlz-requested", "1")
             .header("cookie", format!("dlz_session={token}"))
             .header(
                 "content-type",
@@ -2096,5 +2099,267 @@ async fn phase1_acceptance() {
         .await,
         StatusCode::BAD_REQUEST,
         "old password rejected",
+    );
+}
+
+#[tokio::test]
+async fn csrf_gate_and_security_headers() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+
+    // 写操作缺头应拒绝：走无需会话的注册接口做探针。
+    let bare = Request::builder()
+        .method("POST")
+        .uri("/api/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"username": "x", "invite_code": "y", "password": "z"})).unwrap(),
+        ))
+        .unwrap();
+    let response = api.app.clone().oneshot(bare).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"], "csrf_required");
+
+    // 带头则放行到业务层（邀请码无效，应是业务错误而非 403）。
+    let res = api
+        .call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "x", "invite_code": "nope", "password": "password-1"})),
+            None,
+            None,
+        )
+        .await;
+    assert_ne!(res.status, StatusCode::FORBIDDEN, "带头不应被 CSRF 闸拦: {}", res.json());
+
+    // 读操作不受影响；响应应带安全头。
+    let bare = Request::builder()
+        .method("GET")
+        .uri("/api/health")
+        .body(Body::empty())
+        .unwrap();
+    let response = api.app.clone().oneshot(bare).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(
+        headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("缺少 CSP");
+    assert!(csp.contains("default-src 'self'"), "{csp}");
+    assert!(csp.contains("frame-ancestors 'self'"), "{csp}");
+    assert!(
+        headers.get("referrer-policy").is_some(),
+        "缺少 Referrer-Policy"
+    );
+}
+
+#[tokio::test]
+async fn security_hardening_round2() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    let super_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("round2-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login",
+    )
+    .token();
+
+    // 1. 改密后旧 cookie 应 401，新密码可登，旧密码不行。
+    let (old_token, _) = register_user(&api, &super_token, "emp-revoke").await;
+    must(
+        api.call("GET", "/api/me", Some(&old_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "old session works",
+    );
+    must(
+        api.call(
+            "POST",
+            "/api/admin/recovery",
+            Some(&super_token),
+            Some(json!({"username": "emp-revoke", "action": "reset_password", "password": "password-2"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "reset password",
+    );
+    must(
+        api.call("GET", "/api/me", Some(&old_token), None, None, None)
+            .await,
+        StatusCode::UNAUTHORIZED,
+        "old cookie revoked after reset",
+    );
+    let new_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "emp-revoke", "password": "password-2"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "login with new password",
+    )
+    .token();
+    must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "emp-revoke", "password": "password-1"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "old password rejected",
+    );
+
+    // 顺手：logout 吊销当前会话并清 cookie。
+    must(
+        api.call("GET", "/api/me", Some(&new_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "new session works",
+    );
+    let logged = must(
+        api.call(
+            "POST",
+            "/api/session/logout",
+            Some(&new_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "logout",
+    );
+    let set_cookie = logged.cookie.clone().unwrap_or_default().to_ascii_lowercase();
+    assert!(
+        set_cookie.contains("max-age=0") || set_cookie.contains("expires="),
+        "logout 应清 cookie: {set_cookie}"
+    );
+    must(
+        api.call("GET", "/api/me", Some(&new_token), None, None, None)
+            .await,
+        StatusCode::UNAUTHORIZED,
+        "session revoked after logout",
+    );
+
+    // 2. TOTP 与密码共用失败计数窗：专用 IP 上 20 次错码后第 21 次 429，
+    // 且同用户+IP 的密码登录也被连带限流（共用 user:/ip: 键）。
+    let totp_ip: SocketAddr = "10.99.0.1:1234".parse().unwrap();
+    for _ in 0..20 {
+        must(
+            api.call(
+                "POST",
+                "/api/session/totp",
+                None,
+                Some(json!({"username": "totp-victim", "code": "000000"})),
+                None,
+                Some(totp_ip),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "totp wrong code",
+        );
+    }
+    let limited = must(
+        api.call(
+            "POST",
+            "/api/session/totp",
+            None,
+            Some(json!({"username": "totp-victim", "code": "000000"})),
+            None,
+            Some(totp_ip),
+        )
+        .await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "totp rate limited",
+    );
+    assert_eq!(limited.json()["error"], "login_rate_limited");
+    let shared = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "totp-victim", "password": "whatever-1"})),
+            None,
+            Some(totp_ip),
+        )
+        .await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "password shares totp window",
+    );
+    assert_eq!(shared.json()["error"], "login_rate_limited");
+
+    // 4. LLM base_url 收紧：http 非回环与 https 私网拒绝，回环 http 与 https 域名放行。
+    for (base_url, ok) in [
+        ("http://api.openai.com/v1", false),
+        ("https://192.168.1.10/v1", false),
+        ("https://169.254.169.254/", false),
+        ("http://127.0.0.1:8080/v1", true),
+        ("https://example.invalid/v1", true),
+    ] {
+        let res = api
+            .call(
+                "PUT",
+                "/api/admin/llm-channels",
+                Some(&super_token),
+                Some(json!({"channels": [
+                    {"kind": "openai_chat", "api_key": "sk-test", "enabled": true, "base_url": base_url, "model": "demo"}
+                ]})),
+                None,
+                None,
+            )
+            .await;
+        if ok {
+            must(res, StatusCode::OK, &format!("base_url 允许 {base_url}"));
+        } else {
+            let res = must(res, StatusCode::BAD_REQUEST, &format!("base_url 拒绝 {base_url}"));
+            assert_eq!(res.json()["error"], "channel_base_url_invalid", "{base_url}");
+        }
+    }
+    // base_url 变更写审计：最近一条 llm_channels 应带 base_url。
+    let audits = must(
+        api.call("GET", "/api/admin/audit", Some(&super_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "audit",
+    )
+    .json();
+    let entry = audits["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["action"] == "llm_channels")
+        .expect("应有 llm_channels 审计");
+    assert!(
+        entry["summary"].to_string().contains("base_url"),
+        "审计应记 base_url: {entry}"
+    );
+    assert!(
+        !entry.to_string().contains("sk-test"),
+        "审计不能记 key 明文: {entry}"
     );
 }

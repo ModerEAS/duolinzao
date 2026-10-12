@@ -5,8 +5,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
 use super::{
-    audit, audit_user, email_enabled, ensure_password, ensure_username, issue_session, login_body,
-    record_attempt, too_many_failures, IssuedSession, MAGIC_LINK_MINUTES,
+    audit, audit_user, check_login_rate, email_enabled, ensure_password, ensure_username,
+    issue_session, login_body, record_login, too_many_failures, IssuedSession, MAGIC_LINK_MINUTES,
     PASSKEY_CHALLENGE_MINUTES,
 };
 use crate::crypto::{
@@ -206,17 +206,7 @@ pub async fn login_password(
     ip: &str,
 ) -> Result<IssuedSession, AppError> {
     let now = state.clock.now();
-    let user_key = format!("user:{username}");
-    let ip_key = format!("ip:{ip}");
-    if too_many_failures(&state.pool, &user_key, now).await?
-        || too_many_failures(&state.pool, &ip_key, now).await?
-    {
-        return Err(AppError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "login_rate_limited",
-            "登录失败次数过多",
-        ));
-    }
+    check_login_rate(&state.pool, username, ip, now).await?;
     let row = sqlx::query("SELECT id, username, password_hash FROM account WHERE username = $1")
         .bind(username)
         .fetch_optional(&state.pool)
@@ -226,8 +216,7 @@ pub async fn login_password(
         .and_then(|item| item.get::<Option<String>, _>("password_hash"))
         .map(|hash| verify_password(password, &hash))
         .unwrap_or(false);
-    record_attempt(&state.pool, &user_key, ok, now).await?;
-    record_attempt(&state.pool, &ip_key, ok, now).await?;
+    record_login(&state.pool, username, ip, ok, now).await?;
     if !ok {
         let _ = audit(
             state,
@@ -412,6 +401,8 @@ pub async fn login_totp(
     ip: &str,
 ) -> Result<IssuedSession, AppError> {
     let now = state.clock.now();
+    // 与密码登录共用同一失败计数窗；失败也要落库，避免暴力枚举验证码。
+    check_login_rate(&state.pool, username, ip, now).await?;
     let row = sqlx::query(
         r#"
         SELECT a.id, a.username, t.confirmed
@@ -424,16 +415,20 @@ pub async fn login_totp(
     .fetch_optional(&state.pool)
     .await?;
     let Some(row) = row else {
+        record_login(&state.pool, username, ip, false, now).await?;
         return Err(AppError::bad("totp_invalid", "验证码不正确"));
     };
     if !row.get::<bool, _>("confirmed") {
+        record_login(&state.pool, username, ip, false, now).await?;
         return Err(AppError::bad("totp_invalid", "验证码不正确"));
     }
     let account_id: Uuid = row.get("id");
     let username: String = row.get("username");
     if !check_totp(state, account_id, &username, code).await? {
+        record_login(&state.pool, &username, ip, false, now).await?;
         return Err(AppError::bad("totp_invalid", "验证码不正确"));
     }
+    record_login(&state.pool, &username, ip, true, now).await?;
     let issued = issue_session(&state.pool, now, account_id, user_agent, ip).await?;
     audit(
         state,
@@ -725,26 +720,47 @@ pub async fn passkey_auth_finish(
     user_agent: &str,
     ip: &str,
 ) -> Result<IssuedSession, AppError> {
-    let stored = state
-        .challenges
-        .take(challenge_id, state.clock.now())
-        .await
-        .ok_or_else(|| AppError::bad("passkey_failed", "登录已过期"))?;
+    let now = state.clock.now();
+    // 与密码登录共用同一失败计数窗；每次失败都落库。
+    check_login_rate(&state.pool, username, ip, now).await?;
+    let fail = async |username: &str, ip: &str| {
+        let _ = record_login(&state.pool, username, ip, false, state.clock.now()).await;
+    };
+    let stored = state.challenges.take(challenge_id, now).await.ok_or_else(|| {
+        AppError::bad("passkey_failed", "登录已过期")
+    });
+    let stored = match stored {
+        Ok(item) => item,
+        Err(err) => {
+            fail(username, ip).await;
+            return Err(err);
+        }
+    };
     let Challenge::Authenticate {
         state: auth_state, ..
     } = stored
     else {
+        fail(username, ip).await;
         return Err(AppError::bad("passkey_failed", "登录状态不匹配"));
     };
-    let result = state
+    let result = match state
         .webauthn
         .finish_passkey_authentication(&credential, &auth_state)
-        .map_err(|_| AppError::bad("passkey_failed", "Passkey 校验失败"))?;
+    {
+        Ok(item) => item,
+        Err(_) => {
+            fail(username, ip).await;
+            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+        }
+    };
     let account = sqlx::query("SELECT id, username FROM account WHERE username = $1")
         .bind(username)
         .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| AppError::bad("passkey_failed", "Passkey 校验失败"))?;
+        .await?;
+    let Some(account) = account else {
+        fail(username, ip).await;
+        return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+    };
     let account_id: Uuid = account.get("id");
     let mut rows = sqlx::query(
         "SELECT id, passkey_json FROM passkey WHERE account_id = $1 AND revoked_at IS NULL",
@@ -770,8 +786,10 @@ pub async fn passkey_auth_finish(
         }
     }
     if !matched {
+        fail(username, ip).await;
         return Err(AppError::bad("passkey_failed", "Passkey 不属于该账号"));
     }
+    record_login(&state.pool, username, ip, true, now).await?;
     let issued = issue_session(&state.pool, state.clock.now(), account_id, user_agent, ip).await?;
     audit(
         state,
@@ -1144,4 +1162,35 @@ pub fn session_payload(issued: &IssuedSession, username: &str, account_id: Uuid)
         object.insert("session_id".into(), json!(issued.session_id));
     }
     body
+}
+
+/// 登出：只吊销当前会话（改密/找回走 admin::recover 吊销全部会话）。
+pub async fn logout(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
+    sqlx::query("UPDATE session SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL")
+        .bind(state.clock.now())
+        .bind(user.session_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(json!({"revoked": true}))
+}
+
+/// 改密/找回后吊销该账号全部会话，并作废未消费的 magic link。
+pub async fn revoke_all_sessions(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    now: chrono::DateTime<Utc>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE session SET revoked_at = $1 WHERE account_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(now)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    sqlx::query("UPDATE magic_link SET consumed_at = $1 WHERE account_id = $2 AND consumed_at IS NULL")
+        .bind(now)
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }

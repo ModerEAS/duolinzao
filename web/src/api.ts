@@ -16,6 +16,8 @@ export function setUnauthorized(handler: () => void) {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
+  // 写操作 CSRF 第二道闸：同源 JS 标记，浏览器跨站表单带不上该头。
+  headers.set("x-dlz-requested", "1");
   if (init.body && !(init.body instanceof FormData) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -33,7 +35,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blob> {
-  const response = await fetch(path, { ...init, credentials: "include" });
+  const headers = new Headers(init.headers);
+  headers.set("x-dlz-requested", "1");
+  const response = await fetch(path, { ...init, headers, credentials: "include" });
   if (!response.ok) {
     const text = await response.text();
     let message = "请求失败";
@@ -45,6 +49,11 @@ export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blo
     throw new ApiError(response.status, "http", message);
   }
   return response.blob();
+}
+
+// 登出：吊销当前会话并清 cookie；失败时调用方按 ApiError 处理。
+export async function logout(): Promise<{ revoked: boolean }> {
+  return api<{ revoked: boolean }>("/api/session/logout", { method: "POST" });
 }
 
 export type Kind = "菜" | "饭" | "汤";

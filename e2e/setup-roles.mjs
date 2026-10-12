@@ -12,7 +12,7 @@ const ADMIN_USER = process.env.DLZ_E2E_ADMIN_USER ?? "e2e_admin";
 const ADMIN_PASS = process.env.DLZ_E2E_ADMIN_PASS ?? "E2e-admin-pass1!";
 
 async function req(path, { method = "GET", body, cookie } = {}) {
-  const headers = {};
+  const headers = { "x-dlz-requested": "1" };
   if (body !== undefined) headers["content-type"] = "application/json";
   if (cookie) headers.cookie = cookie;
   const res = await fetch(`${BASE}${path}`, {

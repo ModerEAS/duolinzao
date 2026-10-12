@@ -96,7 +96,7 @@ When("打开就餐人数总览并选择范围内食堂与日期", async ({ page 
   const u = uniqueTag("hc_");
   await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: u, invite_code: inv.json.code, password: "E2e-hc-pass1!" }),
   });
   const emp = await loginSession(u, "E2e-hc-pass1!");
@@ -355,7 +355,7 @@ Given("某菜样本量足够且可见均分低于总管配置的阈值", async (
   const u = uniqueTag("al_");
   await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: u, invite_code: inv.json.code, password: "E2e-al-pass1!" }),
   });
   const emp = await loginSession(u, "E2e-al-pass1!");
@@ -533,12 +533,12 @@ Then("不能按食堂范围批准他人设备", async () => {
   const u = uniqueTag("dv_");
   await fetch(`${baseURL}/api/register`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: u, invite_code: inv.json.code, password: "E2e-dv-pass1!" }),
   });
   const created = await fetch(`${baseURL}/api/login-approvals`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-dlz-requested": "1" },
     body: JSON.stringify({ username: u }),
   });
   expect(created.status).toBe(201);

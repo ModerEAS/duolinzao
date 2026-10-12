@@ -40,6 +40,16 @@ docker compose up               # Postgres 旁路 + app（静态前端由 app �
 
 `config.docker.example.toml` 与 `config.example.toml` 相同，只把主机名和路径换成容器里的：`database.url` 用 `db`，`static_dir=/app/static`，餐品图片在 `duolinzao-images` 卷里（容器以 nobody 运行，镜像已把该目录的属主交给它）。只需要数据库时：`docker compose up db`。
 
+生产 Cookie（Swarm + Traefik）：`server.cookie_secure` 保持 `true`。TLS 在 Traefik 终结、后端容器只听 HTTP 也没关系——浏览器只看自己访问的是不是 HTTPS，照样回送 Secure Cookie。仅本地 HTTP 直连开发或 e2e（`http://localhost` 明文）时才改为 `false`；缺省即 `true`。
+
+写接口 CSRF 第二道闸：所有 POST/PUT/PATCH/DELETE 必须带请求头 `X-DLZ-Requested: 1`（前端 `api()`/`apiBlob()` 已统一带上），缺头返回 403 `csrf_required`。GET/HEAD/OPTIONS 不受影响；登录/注册等无会话端点同样要求该头，无豁免。
+
+真实客户端 IP（Traefik 后面）：`server.trust_proxy` 缺省 `false`，直接取对端地址。生产在 Traefik 后面才配 `true`，此时只解析一层 `X-Forwarded-For` 首段 / `Forwarded` 首个 `for=`，用于登录限流与审计记 IP；开关关闭时绝不读这些头，防客户端伪造。Traefik 侧必须设置 `X-Forwarded-For`（`entryPoints.proxyProtocol` 或 `forwardedHeaders`），否则所有请求都会记成网关 IP，登录限流会误伤。`config.docker.example.toml` 默认 `true`，本地示例默认 `false`。
+
+会话与找回：`POST /api/admin/recovery` 的 `reset_password` 成功后吊销该账号全部会话并作废未消费 magic link（旧 cookie 立刻 401）；`POST /api/session/logout` 吊销当前会话并清 cookie。TOTP 与 Passkey 登录和密码共用同一失败计数窗（用户键 + IP 键，15 分钟 20 次），失败也落库，超限同返 429 `login_rate_limited`。
+
+LLM 出站收紧：`base_url` 只允许 `https`（`http` 仅放行回环 `localhost`/`127/8`/`::1` 测试例外），字面私网/链路本地/组播/文档地址一律拒绝，含凭据的 URL 拒绝；出站客户端最多跟 2 跳重定向。`PUT /api/admin/llm-channels` 的每次变更都写审计（记 kind + base_url + model，不记 key 明文）。
+
 前端在 `web/`。开发时 Vite 把 `/api` 代理到 `127.0.0.1:8080`：
 
 ```bash

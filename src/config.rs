@@ -32,6 +32,7 @@ pub struct AppConfig {
     pub database_url: String,
     pub bind: SocketAddr,
     pub cookie_secure: bool,
+    pub trust_proxy: bool,
     pub static_dir: Option<String>,
 }
 
@@ -153,7 +154,12 @@ impl AppConfig {
             .unwrap_or_else(|| "0.0.0.0:8080".into())
             .parse()
             .map_err(|_| "server.bind 不是合法地址".to_string())?;
-        let cookie_secure = optional_bool(server, "cookie_secure").unwrap_or(false);
+        // 生产默认 true：即使后端容器只听 HTTP（TLS 由 Traefik 等网关终结），
+        // 浏览器也只在 HTTPS 下回送 Secure Cookie。本地 HTTP 直连/e2e 才显式配 false。
+        let cookie_secure = optional_bool(server, "cookie_secure").unwrap_or(true);
+        // 反代可信开关：缺省 false，直接取对端地址；只有确定前面有可信反代
+        // （如 Traefik）剥掉一层并设置 X-Forwarded-For 时才配 true。
+        let trust_proxy = optional_bool(server, "trust_proxy").unwrap_or(false);
         let static_dir = optional_string(server, "static_dir").filter(|s| !s.is_empty());
 
         Ok(Self {
@@ -180,6 +186,7 @@ impl AppConfig {
             database_url: database_url.unwrap(),
             bind,
             cookie_secure,
+            trust_proxy,
             static_dir,
         })
     }
@@ -378,6 +385,7 @@ max_bytes = "{max_bytes}"
 [server]
 bind = "127.0.0.1:0"
 cookie_secure = false
+trust_proxy = false
 
 [database]
 url = "postgres://ubuntu@localhost/duolinzao_test"
@@ -418,6 +426,17 @@ mod tests {
         let config = AppConfig::parse(&raw).expect("email off");
         assert!(!config.email_enabled);
         assert_eq!(config.lock_time.to_string(), "15:04:00");
+    }
+
+    #[test]
+    fn cookie_secure_defaults_to_true() {
+        // 缺省即生产姿态；本地/e2e 在 example_config 里显式 false。
+        let raw = example_config().replace("cookie_secure = false", "");
+        let config = AppConfig::parse(&raw).expect("缺省应为 true");
+        assert!(config.cookie_secure);
+        let raw = example_config();
+        let config = AppConfig::parse(&raw).expect("显式 false");
+        assert!(!config.cookie_secure);
     }
 
     #[test]

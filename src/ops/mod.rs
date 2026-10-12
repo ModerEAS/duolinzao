@@ -212,6 +212,38 @@ pub async fn record_attempt(
     Ok(())
 }
 
+/// 密码/TOTP/Passkey 共用的失败计数窗：用户键与 IP 键任一超限即 429。
+pub async fn check_login_rate(
+    pool: &PgPool,
+    username: &str,
+    ip: &str,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    if too_many_failures(pool, &format!("user:{username}"), now).await?
+        || too_many_failures(pool, &format!("ip:{ip}"), now).await?
+    {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "login_rate_limited",
+            "登录失败次数过多",
+        ));
+    }
+    Ok(())
+}
+
+/// 成功/失败都要记两条（用户+IP），与密码登录一致。
+pub async fn record_login(
+    pool: &PgPool,
+    username: &str,
+    ip: &str,
+    ok: bool,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    record_attempt(pool, &format!("user:{username}"), ok, now).await?;
+    record_attempt(pool, &format!("ip:{ip}"), ok, now).await?;
+    Ok(())
+}
+
 pub fn login_body(account_id: Uuid, username: &str) -> Value {
     json!({
         "account_id": account_id,

@@ -298,6 +298,17 @@ pub async fn put_channels(
         ) {
             return Err(AppError::bad("channel_kind_invalid", "渠道种类无效"));
         }
+        // 出站收紧：只允许 https（http 仅回环测试例外），禁字面私网/链路本地。
+        if channel.kind != "local_script" {
+            if let Some(url) = channel.base_url.as_deref() {
+                crate::domain::validate_llm_base_url(url).map_err(|_| {
+                    AppError::bad(
+                        "channel_base_url_invalid",
+                        "base_url 只允许 https（http 仅限回环测试），且不能指向私网/链路本地",
+                    )
+                })?;
+            }
+        }
         let previous = channel.id.and_then(|id| {
             existing
                 .iter()
@@ -343,9 +354,13 @@ pub async fn put_channels(
         Some("llm_channel"),
         None,
         json!({
+            // base_url 变更必须留痕：记 kind + base_url + model，不记 key 明文。
             "channels": channels.iter().enumerate().map(|(index, channel)| json!({
                 "position": index,
                 "kind": channel.kind,
+                "base_url": channel.base_url,
+                "model": channel.model,
+                "enabled": channel.enabled,
                 "key_configured": channel.kind == "local_script" || channel.api_key.as_ref().map(|k| !k.is_empty()).unwrap_or(channel.id.is_some()),
             })).collect::<Vec<_>>()
         }),
@@ -403,6 +418,8 @@ pub async fn recover(
                 .bind(account_id)
                 .execute(&state.pool)
                 .await?;
+            // 改密后旧会话必须立即失效，否则盗用的 cookie 还能继续用。
+            super::session::revoke_all_sessions(&state.pool, account_id, now).await?;
         }
         "clear_credentials" => {
             sqlx::query(
