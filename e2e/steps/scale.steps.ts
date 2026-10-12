@@ -171,7 +171,8 @@ async function ensureAccount(user: string, pass: string): Promise<string> {
     expect(inv.status, `mint invite: ${inv.status} ${JSON.stringify(inv.json)}`).toBe(201);
     const reg = await fetch(`${baseURL}/api/register`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // 写操作 CSRF 闸（master #5 起）：无头 403 csrf_required；与 helpers.Session.call / 前端 api() 对齐。
+      headers: { "content-type": "application/json", "x-dlz-requested": "1" },
       body: JSON.stringify({ username: user, invite_code: inv.json.code, password: pass }),
     });
     const regBody = await reg.text();
