@@ -37,7 +37,7 @@ min_samples = "5"
 # local_key 由 DLZ_LOCAL_KEY_FILE 注入（LLM key 加密根密钥）。
 
 [dish_image]
-dir = "/var/lib/duolinzao/images"
+dir = "/srv/duolinzao/images"
 max_bytes = "2097152"
 
 [server]

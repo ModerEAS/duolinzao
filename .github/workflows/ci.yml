@@ -268,9 +268,7 @@ jobs:
         run: |
           set -euo pipefail
           SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
-          # 持久数据目录（bind mount 源）：pgdata 归 Postgres（UID 999），images 归 app（nobody）。
-          # postgres 镜像首次启动会自动 chown 空数据目录；为保险起见先建目录并放开。
-          SSH "mkdir -p '${DEPLOY_PATH}/pgdata' '${DEPLOY_PATH}/images'"
+          SSH "mkdir -p '${DEPLOY_PATH}'"
           scp -i ~/.ssh/id_deploy -P "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
             deploy/stack.yml deploy/config.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
       - name: 拉镜像并发版（start-first，失败自动 rollback）

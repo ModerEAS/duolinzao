@@ -8,9 +8,9 @@
 #   TRAEFIK_NETWORK=${TRAEFIK_NETWORK:-traefik-public}
 #   CONFIG_VERSION=deploy/config.toml 的 sha256 前 12 位（CI 算好传入；本地手测用 dev）
 #
-# 持久数据用 bind mount：${DEPLOY_PATH}/pgdata 与 ${DEPLOY_PATH}/images。
-# DEPLOY_PATH 无默认值，部署时必须注入（CI 从 secrets.DEPLOY_PATH 注入，
-# 并先 mkdir -p pgdata/images）。
+# 持久数据用 bind mount：各节点只需 ${DEPLOY_PATH} 目录存在，挂到容器 /srv/duolinzao，
+# 子目录 pgdata/ 与 images/ 由容器启动时自建并设权限（无需 SSH 到 worker）。
+# DEPLOY_PATH 无默认值，部署时必须注入（CI 从 secrets.DEPLOY_PATH 注入）。
 #
 # 用法（manager 上，DEPLOY_PATH 内）：IMAGE_TAG=sha-xxx DLZ_DOMAIN=... \
 #   docker stack deploy -c stack.yml --with-registry-auth duolinzao
@@ -43,7 +43,7 @@ networks:
     internal: true
 
 # 持久数据用 bind mount（用户选 A）：实际路径由 DEPLOY_PATH 拼出
-# （如 /opt/duolinzao/pgdata），部署时必须注入该变量（CI 已注入）。
+# （容器内 /srv/duolinzao/{pgdata,images}），部署时必须注入该变量（CI 已注入）。
 # 不用命名卷：数据目录在宿主机可见，备份即 tar 文件夹。
 
 services:
@@ -55,9 +55,11 @@ services:
       POSTGRES_USER: duolinzao
       POSTGRES_DB: duolinzao
       POSTGRES_PASSWORD_FILE: /run/secrets/dlz_db_password
+      # 只挂 DEPLOY_PATH 父目录：官方镜像 entrypoint（root）会自建 PGDATA 并 chown 999、chmod 700。
+      PGDATA: /srv/duolinzao/pgdata
     command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=30"]
     volumes:
-      - ${DEPLOY_PATH}/pgdata:/var/lib/postgresql/data
+      - ${DEPLOY_PATH}:/srv/duolinzao
     secrets:
       - dlz_db_password
     deploy:
@@ -104,8 +106,15 @@ services:
       - dlz_super_password
       - dlz_local_key
       - dlz_smtp_password
+    # 只挂 DEPLOY_PATH 父目录（各节点只需该目录存在）。以 root 启动仅做 mkdir/chown，
+    # 随即 setpriv 降权到 nobody(65534) 运行应用。
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mkdir -p /srv/duolinzao/images && chown 65534:65534 /srv/duolinzao/images && exec setpriv --reuid=65534 --regid=65534 --clear-groups /app/duolinzao
     volumes:
-      - ${DEPLOY_PATH}/images:/var/lib/duolinzao/images
+      - ${DEPLOY_PATH}:/srv/duolinzao
     deploy:
       replicas: 1
       placement:

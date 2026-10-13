@@ -25,12 +25,12 @@ docker node inspect <节点> --format '{{.Spec.Labels}}'
 
 ### 1.1b 持久数据目录（bind mount）
 
-持久数据不用命名卷，直接落宿主机目录（`DEPLOY_PATH` 下，deploy 时自动 `mkdir -p`）：
+持久数据不用命名卷，直接落宿主机目录。**每个会运行 app 或 db 的节点上，只需要事先建好同一个 `DEPLOY_PATH` 目录**（root 所有、权限 `755` 即可，例如 `sudo mkdir -p -m 755 /opt/duolinzao`）。子目录由容器启动时自动创建，CI 不需要 SSH 到 worker：
 
-- `DEPLOY_PATH/pgdata` → db 的 `/var/lib/postgresql/data`
-- `DEPLOY_PATH/images` → app 的 `/var/lib/duolinzao/images`（菜品图）
+- db：把 `DEPLOY_PATH` 挂到 `/srv/duolinzao`，`PGDATA=/srv/duolinzao/pgdata`。官方 postgres 镜像的 entrypoint 以 root 启动，会自建 `pgdata/` 并设为 `999`、`0700`，首次启动自动 initdb。
+- app：同样挂 `DEPLOY_PATH` → `/srv/duolinzao`。容器以 root 启动，只执行 `mkdir -p /srv/duolinzao/images && chown 65534:65534`，随即用 `setpriv` 降权到 nobody（65534）运行应用，菜品图写入 `/srv/duolinzao/images`（`deploy/config.toml` 的 `dish_image.dir`）。
 
-权限注意：Postgres 容器内以 UID 999 运行。首次部署目录是空的，postgres 镜像 entrypoint 会自己 chown；若手动预建目录并遇到权限报错，`chown -R 999:999 <DEPLOY_PATH>/pgdata` 即可。app 侧 images 目录由镜像内 nobody（65534）写入，同理按需 chown。
+`DEPLOY_PATH` 必须对容器内用户可遍历（至少 `755`），否则 postgres 初始化会报 `Permission denied`。app 以 nobody 运行时读不到 `pgdata/`（0700），两者互不影响。
 
 ### 1.2 网络
 
