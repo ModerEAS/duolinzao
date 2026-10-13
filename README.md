@@ -4,7 +4,7 @@
 
 技术栈：**Vue3**（前端）+ **Rust Axum**（后端）。
 
-原生客户端（Android / 鸿蒙）设计见 [docs/clients/](docs/clients/README.md)；源码目录约定见 [clients/](clients/README.md)（设计确认前不落业务代码）。
+Android 原生客户端设计见 [docs/clients/](docs/clients/README.md)；源码目录约定见 [clients/](clients/README.md)（鸿蒙暂缓；设计确认前不落业务代码）。
 
 一期需求已锁定，见 [docs/requirements-phase1.md](docs/requirements-phase1.md)。
 
