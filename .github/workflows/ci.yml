@@ -302,13 +302,18 @@ jobs:
           for _ in $(seq 1 40); do
             STATE="$(SSH "docker service inspect duolinzao_app --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
             SPEC="$(SSH "docker service inspect duolinzao_app --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'" 2>/dev/null || true)"
-            RUNNING="$(SSH "docker service ps duolinzao_app --filter desired-state=running --format '{{.Image}} {{.CurrentState}}'" 2>/dev/null | grep -c "^${WANT}.*Running" || true)"
+            # Swarm 解析后 Image 常为 tag@sha256:...，不能与 WANT 精确相等。
+            RUNNING="$(SSH "docker service ps duolinzao_app --filter desired-state=running --format '{{.Image}} {{.CurrentState}}'" 2>/dev/null | grep -c "^${WANT}\(@[^ ]*\)\? .*Running" || true)"
             RUNNING="${RUNNING:-0}"
             echo "update=${STATE} spec=${SPEC} running=${RUNNING}"
             case "${STATE}" in
               *rollback*|*paused*) echo "更新失败：${STATE}"; exit 1;;
             esac
-            if [ "${SPEC}" = "${WANT}" ] && [ "${RUNNING}" -ge 1 ] && { [ -z "${STATE}" ] || [ "${STATE}" = "<no value>" ] || [ "${STATE}" = "completed" ]; }; then
+            SPEC_OK=0
+            case "${SPEC}" in
+              "${WANT}"|"${WANT}"@*) SPEC_OK=1 ;;
+            esac
+            if { [ "${SPEC_OK}" -eq 1 ] || [ "${RUNNING}" -ge 1 ]; } && [ "${RUNNING}" -ge 1 ]; then
               echo CONVERGED
               exit 0
             fi
