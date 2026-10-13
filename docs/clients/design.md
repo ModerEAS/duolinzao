@@ -11,8 +11,9 @@ UI 参考：[docs/ui](../ui/README.md)
 |----|------|
 | 平台 | **只做 Android**（Kotlin + Jetpack Compose） |
 | 鸿蒙 | **暂缓 / 本期忽略**；不建 `clients/harmony/`，不排期纯血 HarmonyOS NEXT |
-| MVP | Android：登录（**密码 + Passkey**）+ 员工报餐最小闭环 |
+| MVP | Android：登录（**默认 Passkey**，密码仅备用/回退）+ 员工报餐最小闭环 |
 | Passkey | 使用 **Android Credential Manager / 平台 API**，**不用 WebView 套 WebAuthn 页** |
+| 登录优先级 | **默认 Passkey**；无可用凭据 / 取消 / 失败后再密码（备用入口可手动切密码） |
 | 分发 | 服务端（部署方）改包内 Base URL 后重签，经站点 `/app/` 下发 |
 | 卓易通 | 仅作可选兼容备注（§8.2），**不作为交付目标** |
 
@@ -24,7 +25,7 @@ UI 参考：[docs/ui](../ui/README.md)
 
 1. 提供与 Web **同一后端** 的 Android 客户端，覆盖员工竖屏主路径，并规划食堂 / 总管横屏工作台。
 2. **通用 APK**：包内可读服务端 Base URL；自托管方在发版流程里改配置并重新签名，用户从**自家站点**下载，连的就是自家 API。
-3. MVP：**密码登录 + Passkey 登录/注册（平台 API）+ 员工报餐最小闭环**；其余画面按阶段迭代，权限与 Web 一致。
+3. MVP：**登录默认走 Passkey**（平台 API）；无可用凭据、用户取消或失败时再回退密码；另含员工报餐最小闭环。其余画面按阶段迭代，权限与 Web 一致。
 4. 开源仓库示例域名仅用 `https://example.com`，禁止私有部署信息入仓。
 
 ### 0.2 非目标（本期）
@@ -82,7 +83,7 @@ UI 参考：[docs/ui](../ui/README.md)
 ### 2.1 员工竖屏（底部三 Tab：报餐 | 评分 | 我的）
 
 ```
-登录（Passkey / 密码等，顺序见 §3.2）/ 注册（邀请码）
+登录（**默认 Passkey**，密码备用；见 §3.2）/ 注册（邀请码）
  └─ 员工壳
       ├─ 报餐
       │    ├─ 首页
@@ -100,7 +101,7 @@ UI 参考：[docs/ui](../ui/README.md)
 
 待本设计不再阻塞后编码，**仅 Android**：
 
-1. **登录**：密码 + **Passkey**（平台 Credential Manager；见 §3.2）
+1. **登录**：**默认 Passkey**（Credential Manager）；无可用凭据或失败后再密码（见 §3.2）
 2. 首页 / 本周报餐（`/api/me/home` 与/或 `/api/me/meals`）
 3. 切换某日某餐报/不报（`PUT /api/meals/{date}/{slot}`）
 4. 401 → 回登录；写请求带 `X-DLZ-Requested: 1`；Cookie 持久化
@@ -135,15 +136,25 @@ UI 参考：[docs/ui](../ui/README.md)
 
 ### 3.2 登录与 Passkey（Android 平台 API）
 
-登录方式优先级与 Web 一致：**Passkey → TOTP → 邮箱 magic link（可关）→ 密码**。MVP 必须落地 **Passkey + 密码**；TOTP / magic link 为 MVP+。
+全站方式优先级与 Web 一致：**Passkey → TOTP → 邮箱 magic link（可关）→ 密码**。
 
-#### 3.2.1 密码
+**MVP 登录流（已确认）：默认 Passkey；密码仅备用 / 回退。**
 
-- `POST /api/session/password`，body `{ "username", "password" }` → Set-Cookie。
+```
+打开登录页
+  ├─ 主路径：发起 Passkey（Credential Manager）
+  │     ├─ 成功 → 建立会话（cookie）→ 进 App
+  │     ├─ 无可用凭据 / 平台不支持 / 用户取消 / 断言失败
+  │     │     → 展示或切换到「密码登录」（备用）
+  │     └─ （MVP+）再考虑 TOTP / magic link
+  └─ 次要入口：用户主动点「使用密码」也可直接进密码表单（不强制先失败一次）
+```
 
-#### 3.2.2 Passkey（非 WebView）
+TOTP / magic link 为 MVP+，不改变「Passkey 优先、密码回退」的主叙事。
 
-后端已有 WebAuthn 风格接口（与 Web 共用）：
+#### 3.2.1 Passkey（主路径，非 WebView）
+
+后端 WebAuthn 风格接口（与 Web 共用）：
 
 | 步骤 | 方法 | 路径 |
 |------|------|------|
@@ -155,11 +166,17 @@ UI 参考：[docs/ui](../ui/README.md)
 
 **Android 实现要求：**
 
-1. 使用 **Credential Manager**（`androidx.credentials`）及系统支持的 **publickey / passkey** 流程，把服务端下发的 challenge / `publicKey` 选项交给平台 API，再把断言结果 POST 回 finish 接口。
-2. **禁止**用 WebView 打开站点登录页来完成 Passkey，避免双栈会话、Cookie 不一致和「假原生」。
-3. RP ID / origin 必须与部署域名（即包内 `baseUrl` 的 host）及服务端 WebAuthn 配置一致；自托管改包时，服务端配置与 APK 内 Base URL **一起**指向同一域名。
-4. 设备无 Passkey 能力或用户取消时，降级到密码（及后续 TOTP 等），不阻塞登录。
-5. 新设备登录确认（`/api/login-approvals*`）与 Passkey 绑定流程按需求 §3.1；MVP 可先做「已有 Passkey 直接登录」，页内批准新设备列为 MVP+。
+1. 使用 **Credential Manager**（`androidx.credentials`）及系统 **publickey / passkey** 流程：服务端 challenge → 平台 API → 断言结果 POST 到 finish。
+2. **禁止**用 WebView 打开站点登录页完成 Passkey。
+3. RP ID / origin 与包内 `baseUrl` 的 host、服务端 WebAuthn 配置一致；自托管改包时三者同域。
+4. 无可用凭据、不支持、取消或失败时，**回退密码**（不阻塞登录）；不要静默重试死循环。
+5. 新设备确认（`/api/login-approvals*`）按需求 §3.1；MVP 可先「已有 Passkey 直接登录」，页内批准新设备为 MVP+。
+
+#### 3.2.2 密码（备用 / 回退）
+
+- 仅作备用：无 Passkey、用户选择密码、或 Passkey 失败后使用。
+- `POST /api/session/password`，body `{ "username", "password" }` → Set-Cookie。
+- 登录页可保留「使用密码」次要入口，但**默认主按钮 / 首屏动作是 Passkey**，不得把密码表单做成唯一默认主路径。
 
 ### 3.3 员工报餐 API（MVP 必接）
 
@@ -238,7 +255,7 @@ APK 内例如 `assets/server.json`：
 |------|------|------|
 | D0 | 本设计评审 | 确认后开工 |
 | D1 | `clients/android` 骨架 + `server.json` + inject 脚本 + mock 开关 | assembleDebug |
-| D2 | 密码 + Passkey 登录 + 员工报餐 MVP（真 API） | 演示环境跑通 |
+| D2 | Passkey 优先登录（密码回退）+ 员工报餐 MVP（真 API） | 演示环境跑通 |
 | D3 | 班制 / 绑定食堂 / 通知 / 评分 / 新设备确认 | 员工主路径对齐 Web |
 | D4 | 横屏工作台分批 | 按权限 |
 | D5 | `/app/` 托管与应用内更新 | 文档 + 静态资源约定 |
@@ -295,15 +312,15 @@ docs/clients/
 **已确认**
 
 1. MVP = **Android**；鸿蒙暂缓。
-2. MVP 功能 = 密码 + **Passkey（平台 API）** + 员工报餐最小闭环。
-3. 单 APK 双壳（员工 + 工作台）可接受；工作台非 MVP。
-4. 正式包禁止用户改 Base URL；由部署方 inject + 重签。
-5. 主分发 = 站点 `/app/`；应用内更新可放 D5。
+2. MVP 功能 = **Passkey 优先登录**（平台 API）+ 密码备用/回退 + 员工报餐最小闭环。
+3. 登录流：**默认 Passkey**；无可用凭据、取消或失败再密码；允许次要「使用密码」入口。
+4. 单 APK 双壳（员工 + 工作台）可接受；工作台非 MVP。
+5. 正式包禁止用户改 Base URL；由部署方 inject + 重签。
+6. 主分发 = 站点 `/app/`；应用内更新可放 D5。
 
 **仍可微调（不阻塞 D0→D1）**
 
-- Passkey 与密码在登录页的默认展示顺序（需求为 Passkey 优先）。
-- MVP 是否包含「绑定 Passkey」页，或仅「用已有 Passkey 登录」。
+- MVP 是否包含「绑定 Passkey」页，或仅「用已有 Passkey 登录」（登录流本身已定为 Passkey 优先）。
 - inject 脚本是改未打包的 `assets` 再 assemble，还是改已构建 APK 内文件后重签（两种都可，README 写清一种主路径）。
 
 ---
@@ -314,3 +331,4 @@ docs/clients/
 |------|------|
 | 2026-10-13 | 初稿：Android + 鸿蒙并列 |
 | 2026-10-13 | 修订：只做 Android；鸿蒙暂缓；MVP 含 Passkey（Credential Manager，非 WebView）；强化服务端改包分发；卓易通仅可选备注 |
+| 2026-10-13 | 修订：登录流确认——默认 Passkey，密码仅备用/回退 |

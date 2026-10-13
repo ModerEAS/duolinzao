@@ -4,7 +4,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [design.md](design.md) | 完整设计：角色与用户逻辑、信息架构、Web API 对齐、Passkey（平台 API）、包内 URL 与服务端改包分发；鸿蒙暂缓说明 |
+| [design.md](design.md) | 完整设计：角色与 IA、API 对齐、**登录默认 Passkey（密码回退）**、包内 URL 与服务端改包；鸿蒙暂缓 |
 | [../requirements-phase1.md](../requirements-phase1.md) | 一期需求正文（权威） |
 | [../ui/README.md](../ui/README.md) | Web 界面参考；原生信息结构对齐即可 |
 

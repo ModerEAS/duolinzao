@@ -4,7 +4,7 @@
 
 | 路径 | 计划 | 状态 |
 |------|------|------|
-| `android/` | Kotlin + Jetpack Compose，通用 APK；包内 `server.json`；Passkey 用 Credential Manager | **待设计确认后开工** |
+| `android/` | Kotlin + Compose；包内 `server.json`；登录默认 Passkey（Credential Manager），密码回退 | **待设计确认后开工** |
 | `harmony/` | 纯血鸿蒙 | **本期暂缓，不创建** |
 
 设计文档见 [`docs/clients/`](../docs/clients/README.md)。当前目录仅作占位，不含业务实现。
