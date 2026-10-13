@@ -1,0 +1,146 @@
+# 多邻灶 Docker Swarm 生产栈：app + Postgres，Traefik 入口。
+# 开源仓库只放通用配置：域名、entrypoint、certresolver、外部网络名、部署路径
+# 全部变量化（见下表），默认值仅供本地 `config` 校验，生产由 CI vars 注入。
+#
+#   DLZ_DOMAIN=${DLZ_DOMAIN:-example.com}
+#   TRAEFIK_ENTRYPOINT=${TRAEFIK_ENTRYPOINT:-web}
+#   TRAEFIK_CERTRESOLVER=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+#   TRAEFIK_NETWORK=${TRAEFIK_NETWORK:-traefik-public}
+#   CONFIG_VERSION=deploy/config.toml 的 sha256 前 12 位（CI 算好传入；本地手测用 dev）
+#
+# 持久数据用 bind mount：${DEPLOY_PATH}/pgdata 与 ${DEPLOY_PATH}/images。
+# DEPLOY_PATH 无默认值，部署时必须注入（CI 从 secrets.DEPLOY_PATH 注入，
+# 并先 mkdir -p pgdata/images）。
+#
+# 用法（manager 上，DEPLOY_PATH 内）：IMAGE_TAG=sha-xxx DLZ_DOMAIN=... \
+#   docker stack deploy -c stack.yml --with-registry-auth duolinzao
+# 校验：docker compose -f deploy/stack.yml config（带与不带变量各一次）。
+# 首次准备见 docs/deploy.md.
+
+configs:
+  duolinzao_config:
+    name: duolinzao_config_${CONFIG_VERSION:-dev}
+    file: ./config.toml
+
+secrets:
+  dlz_db_password:
+    external: true
+  dlz_database_url:
+    external: true
+  dlz_super_password:
+    external: true
+  dlz_local_key:
+    external: true
+  dlz_smtp_password:
+    external: true
+
+networks:
+  traefik-public:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik-public}
+  duolinzao-internal:
+    driver: overlay
+    internal: true
+
+# 持久数据用 bind mount（用户选 A）：实际路径由 DEPLOY_PATH 拼出
+# （如 /opt/duolinzao/pgdata），部署时必须注入该变量（CI 已注入）。
+# 不用命名卷：数据目录在宿主机可见，备份即 tar 文件夹。
+
+services:
+  db:
+    image: postgres:16
+    networks:
+      - duolinzao-internal
+    environment:
+      POSTGRES_USER: duolinzao
+      POSTGRES_DB: duolinzao
+      POSTGRES_PASSWORD_FILE: /run/secrets/dlz_db_password
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=30"]
+    volumes:
+      - ${DEPLOY_PATH}/pgdata:/var/lib/postgresql/data
+    secrets:
+      - dlz_db_password
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.duolinzao.role==db
+      resources:
+        limits:
+          memory: 448M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duolinzao"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    image: ghcr.io/moderras/duolinzao:${IMAGE_TAG:-latest}
+    networks:
+      - traefik-public
+      - duolinzao-internal
+    environment:
+      DUOLINZAO_CONFIG: /config/config.toml
+      DLZ_DATABASE_URL_FILE: /run/secrets/dlz_database_url
+      DLZ_SUPER_PASSWORD_FILE: /run/secrets/dlz_super_password
+      DLZ_LOCAL_KEY_FILE: /run/secrets/dlz_local_key
+      DLZ_SMTP_PASSWORD_FILE: /run/secrets/dlz_smtp_password
+      DLZ_WEBAUTHN_RP_ID: ${DLZ_DOMAIN:-example.com}
+      DLZ_WEBAUTHN_ORIGIN: https://${DLZ_DOMAIN:-example.com}
+    configs:
+      # source 指顶层 configs 的 key；实际对象名由上面的 name（含 CONFIG_VERSION）决定，
+      # 配置一改名一变，stack deploy 即触发服务更新。
+      - source: duolinzao_config
+        target: /config/config.toml
+    secrets:
+      - dlz_database_url
+      - dlz_super_password
+      - dlz_local_key
+      - dlz_smtp_password
+    volumes:
+      - ${DEPLOY_PATH}/images:/var/lib/duolinzao/images
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.duolinzao.role==app
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+        monitor: 60s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.duolinzao.rule=Host(`${DLZ_DOMAIN:-example.com}`)"
+        - "traefik.http.routers.duolinzao.entrypoints=${TRAEFIK_ENTRYPOINT:-web}"
+        - "traefik.http.routers.duolinzao.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+        - "traefik.http.services.duolinzao.loadbalancer.server.port=8080"
+        - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik-public}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

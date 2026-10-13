@@ -40,23 +40,38 @@ impl AppConfig {
     pub fn load_path(path: impl AsRef<Path>) -> Result<Self, String> {
         let raw =
             fs::read_to_string(path.as_ref()).map_err(|err| format!("无法读取配置: {err}"))?;
-        Self::parse(&raw)
+        Self::parse_with_env(&raw, &|key| std::env::var(key).ok())
     }
 
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let value: Value =
+        // 历史行为：纯 TOML，不读环境（单测/e2e 预置走这里）。
+        Self::parse_with_env(raw, &|_| None)
+    }
+
+    /// 生产入口：TOML 先行，敏感与域名类字段可用 `DLZ_*` 环境变量覆盖，
+    /// 密钥优先读 `*_FILE`（docker secret 挂载，如 /run/secrets/xxx）。
+    pub fn parse_with_env(
+        raw: &str,
+        get: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self, String> {
+        let mut value: Value =
             toml::from_str(raw).map_err(|err| format!("配置不是合法 TOML: {err}"))?;
+        apply_env_overrides(&mut value, get)?;
+        Self::parse_value(&value)
+    }
+
+    fn parse_value(value: &Value) -> Result<Self, String> {
         let mut missing = Vec::new();
 
-        let super_admin = table(&value, "super_admin", &mut missing);
-        let webauthn = table(&value, "webauthn", &mut missing);
-        let email = table(&value, "email", &mut missing);
-        let smtp = table(&value, "smtp", &mut missing);
-        let schedule = table(&value, "schedule", &mut missing);
-        let score_alert = table(&value, "score_alert", &mut missing);
-        let crypto = table(&value, "crypto", &mut missing);
-        let dish = table(&value, "dish_image", &mut missing);
-        let database = table(&value, "database", &mut missing);
+        let super_admin = table(value, "super_admin", &mut missing);
+        let webauthn = table(value, "webauthn", &mut missing);
+        let email = table(value, "email", &mut missing);
+        let smtp = table(value, "smtp", &mut missing);
+        let schedule = table(value, "schedule", &mut missing);
+        let score_alert = table(value, "score_alert", &mut missing);
+        let crypto = table(value, "crypto", &mut missing);
+        let dish = table(value, "dish_image", &mut missing);
+        let database = table(value, "database", &mut missing);
         let server = value.get("server").and_then(Value::as_table).cloned();
 
         let super_username = req_string(
@@ -190,6 +205,59 @@ impl AppConfig {
             static_dir,
         })
     }
+}
+
+/// `DLZ_*` 环境覆盖表：([TOML 路径], 环境变量名)。敏感项优先读 `<VAR>_FILE`
+/// 指向的文件（docker secret），回退直读变量；域名类只读变量。
+/// 缺 `_FILE` 文件即报错（fail closed），不静默回退，避免配错密钥还起库。
+fn apply_env_overrides(
+    value: &mut Value,
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), String> {
+    const RULES: [(&[&str], &str); 6] = [
+        (&["database", "url"], "DLZ_DATABASE_URL"),
+        (&["super_admin", "password"], "DLZ_SUPER_PASSWORD"),
+        (&["crypto", "local_key"], "DLZ_LOCAL_KEY"),
+        (&["smtp", "password"], "DLZ_SMTP_PASSWORD"),
+        (&["webauthn", "rp_id"], "DLZ_WEBAUTHN_RP_ID"),
+        (&["webauthn", "rp_origin"], "DLZ_WEBAUTHN_ORIGIN"),
+    ];
+    for (path, var) in RULES {
+        let Some(secret) = resolve_secret(get, var)? else {
+            continue;
+        };
+        let mut node: &mut Value = &mut *value;
+        for key in &path[..path.len() - 1] {
+            node = node
+                .get_mut(*key)
+                .filter(|item| item.is_table())
+                .ok_or_else(|| format!("环境覆盖 {var} 需要 [{table}] 表", table = path[0]))?;
+        }
+        // insert 而非 IndexMut：TOML 里缺该键正是常态（密钥不进文件）。
+        node.as_table_mut()
+            .ok_or_else(|| format!("环境覆盖 {var} 需要 [{table}] 表", table = path[0]))?
+            .insert(path[path.len() - 1].to_string(), Value::String(secret));
+    }
+    Ok(())
+}
+
+fn resolve_secret(
+    get: &dyn Fn(&str) -> Option<String>,
+    var: &str,
+) -> Result<Option<String>, String> {
+    let file_key = format!("{var}_FILE");
+    if let Some(path) = get(&file_key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        let content = fs::read_to_string(&path)
+            .map_err(|err| format!("读密钥文件失败 {path}: {err}"))?;
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return Err(format!("密钥文件为空 {path}"));
+        }
+        return Ok(Some(content));
+    }
+    Ok(get(var)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty()))
 }
 
 fn is_placeholder(value: &str) -> bool {
@@ -446,5 +514,83 @@ mod tests {
         broken = broken.replace("from = \"noreply@example.com\"", "from = \"\"");
         let err = AppConfig::parse(&broken).expect_err("smtp required");
         assert!(err.contains("smtp.host"), "{err}");
+    }
+
+    fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn env_overrides_sensitive_fields() {
+        // TOML 留占位，环境变量注入真实值（含前后空白应被裁掉）。
+        let raw = example_config()
+            .replace("url = \"postgres://ubuntu@localhost/duolinzao_test\"", "url = \"REPLACE_ME\"")
+            .replace("password = \"root-password-1\"", "password = \"REPLACE_ME\"");
+        let env = env_map(&[
+            ("DLZ_DATABASE_URL", "  postgres://u:p@db:5432/x  "),
+            ("DLZ_SUPER_PASSWORD", "s3cret-pass"),
+            ("DLZ_WEBAUTHN_RP_ID", "duolinzao.example.com"),
+            ("DLZ_WEBAUTHN_ORIGIN", "https://duolinzao.example.com"),
+        ]);
+        let config =
+            AppConfig::parse_with_env(&raw, &|k| env.get(k).cloned()).expect("env 覆盖");
+        assert_eq!(config.database_url, "postgres://u:p@db:5432/x");
+        assert_eq!(config.super_password, "s3cret-pass");
+        assert_eq!(config.webauthn_rp_id, "duolinzao.example.com");
+        assert_eq!(config.webauthn_origin, "https://duolinzao.example.com");
+    }
+
+    #[test]
+    fn deploy_config_needs_secrets_from_env() {
+        // deploy/config.toml 只放非敏感值；密钥缺了必须拒绝启动，齐了必须全绿。
+        // 部署改了任一必填还测得过去，这里先炸。
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/config.toml");
+        let raw = std::fs::read_to_string(path).expect("deploy config 存在");
+        let err = AppConfig::parse_with_env(&raw, &|_| None).expect_err("缺密钥必须拒起");
+        for key in ["database.url", "super_admin.password", "crypto.local_key"] {
+            assert!(err.contains(key), "{key} 缺失时应报错，实际：{err}");
+        }
+        let env = env_map(&[
+            ("DLZ_DATABASE_URL", "postgres://u:p@db:5432/x"),
+            ("DLZ_SUPER_PASSWORD", "prod-pass-1"),
+            ("DLZ_LOCAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="),
+            ("DLZ_WEBAUTHN_RP_ID", "duolinzao.example.com"),
+            ("DLZ_WEBAUTHN_ORIGIN", "https://duolinzao.example.com"),
+        ]);
+        let config =
+            AppConfig::parse_with_env(&raw, &|k| env.get(k).cloned()).expect("密钥齐应启动");
+        assert!(config.cookie_secure);
+        assert!(config.trust_proxy);
+        assert_eq!(config.bind.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.database_url, "postgres://u:p@db:5432/x");
+    }
+
+    #[test]
+    fn secret_file_wins_and_fail_closed() {
+        let dir = std::env::temp_dir().join(format!("dlz-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("db_url");
+        std::fs::write(&secret, "postgres://u:filepw@db:5432/x\n").unwrap();
+        let raw = example_config().replace(
+            "url = \"postgres://ubuntu@localhost/duolinzao_test\"",
+            "url = \"REPLACE_ME\"",
+        );
+        // _FILE 优先于同名直读变量，且裁掉末尾换行。
+        let env = env_map(&[
+            ("DLZ_DATABASE_URL_FILE", secret.to_str().unwrap()),
+            ("DLZ_DATABASE_URL", "postgres://u:envpw@db:5432/x"),
+        ]);
+        let config =
+            AppConfig::parse_with_env(&raw, &|k| env.get(k).cloned()).expect("file 优先");
+        assert_eq!(config.database_url, "postgres://u:filepw@db:5432/x");
+        // 指向不存在的文件：直接报错，不回退、不起库。
+        let env = env_map(&[("DLZ_DATABASE_URL_FILE", "/no/such/secret")]);
+        let err = AppConfig::parse_with_env(&raw, &|k| env.get(k).cloned())
+            .expect_err("缺文件必须报错");
+        assert!(err.contains("读密钥文件失败"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

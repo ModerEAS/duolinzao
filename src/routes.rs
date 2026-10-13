@@ -47,6 +47,8 @@ pub fn router(state: AppState) -> Router {
     let limit = state.config.dish_image_max_bytes as usize + 65_536;
     let mut api = Router::new()
         .route("/api/health", get(health))
+        // 部署探针：Traefik/CI 只看连通性，不查库、不鉴权，免 CSRF（GET 豁免）。
+        .route("/healthz", get(healthz))
         .route("/api/session/methods", get(methods))
         .route("/api/register", post(register))
         .route("/api/session/password", post(login_password))
@@ -193,6 +195,10 @@ fn cleared_cookie(secure: bool) -> Cookie<'static> {
 
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok", "name": "多邻灶"}))
+}
+
+async fn healthz() -> &'static str {
+    "ok"
 }
 
 async fn methods(State(state): State<AppState>) -> Result<Json<Value>, AppError> {

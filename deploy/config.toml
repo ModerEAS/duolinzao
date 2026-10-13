@@ -1,0 +1,52 @@
+# 多邻灶生产配置（Docker Swarm 用，随 stack 一起 scp 到 manager）。
+# 原则：非敏感值写死在这里；密钥一律不进文件，由 DLZ_*_FILE 环境变量
+# 指向 /run/secrets/* 注入（见 src/config.rs apply_env_overrides）。
+# 缺密钥文件时应用拒绝启动（fail closed），不会用空值起库。
+
+[super_admin]
+username = "root"
+# password 由 DLZ_SUPER_PASSWORD_FILE 注入。
+
+[webauthn]
+# rp_id / rp_origin 由 DLZ_WEBAUTHN_RP_ID / DLZ_WEBAUTHN_ORIGIN 注入
+#（stack.yml 里按 DLZ_DOMAIN 拼好）。
+rp_name = "多邻灶"
+
+[email]
+enabled = false
+
+[smtp]
+host = ""
+port = 587
+username = ""
+# password 由 DLZ_SMTP_PASSWORD_FILE 注入（启用邮箱时才需要）。
+from = ""
+
+[schedule]
+lock_time = "09:00"
+breakfast_after = "09:30"
+lunch_after = "13:30"
+dinner_after = "19:30"
+
+[score_alert]
+# 初始值；超管可在“强提醒阈值”页改（rating.strong_alert_config）。
+mean_threshold = "-0.5"
+min_samples = "5"
+
+[crypto]
+# local_key 由 DLZ_LOCAL_KEY_FILE 注入（LLM key 加密根密钥）。
+
+[dish_image]
+dir = "/var/lib/duolinzao/images"
+max_bytes = "2097152"
+
+[server]
+bind = "0.0.0.0:8080"
+# Traefik 网关终结 HTTPS、后端只听 HTTP：必须 true，浏览器才在 HTTPS 下回送 Cookie。
+cookie_secure = true
+# Traefik 后面配 true：只信一层 X-Forwarded-For。Traefik 侧必须设置该头。
+trust_proxy = true
+static_dir = "/app/static"
+
+[database]
+# url 由 DLZ_DATABASE_URL_FILE 注入（形如 postgres://duolinzao:密码@db:5432/duolinzao）。
