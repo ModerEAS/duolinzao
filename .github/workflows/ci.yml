@@ -217,6 +217,8 @@ jobs:
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            # master 推送：sha-<commit> 供 Swarm 按不可变 tag 部署，latest 跟踪最新稳定。
+            type=raw,value=sha-${{ github.sha }},enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
       - name: build（PR 只 build；master / v* 才 push）
         uses: docker/build-push-action@v6
@@ -227,3 +229,109 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: 部署到 Swarm（production）
+    runs-on: ubuntu-latest
+    needs: [test, e2e, e2e-scale, image]
+    # 仅主仓 master push；fork 与 PR 永不触发。服务器上只部署，严禁 build。
+    if: github.repository == 'ModerRAS/duolinzao' && github.ref == 'refs/heads/master' && github.event_name == 'push'
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment: production
+    env:
+      # 镜像 tag 与 image job 的 `sha-<commit>` 对齐；域名等走 repo vars（空则用 stack 默认值）。
+      IMAGE_TAG: sha-${{ github.sha }}
+      DLZ_DOMAIN: ${{ vars.DLZ_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 算配置版本（config.toml sha256 前 12 位，config 改名即触发服务更新）
+        run: echo "CONFIG_VERSION=$(sha256sum deploy/config.toml | cut -c1-12)" >> "$GITHUB_ENV"
+      - name: 准备 SSH（key + known_hosts，强制校验主机密钥）
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: 同步 stack 文件到 manager
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          SSH "mkdir -p '${DEPLOY_PATH}'"
+          scp -i ~/.ssh/id_deploy -P "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
+            deploy/stack.yml deploy/config.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
+      - name: 拉镜像并发版（start-first，失败自动 rollback）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_USER: ${{ github.repository_owner }}
+          TRAEFIK_ENTRYPOINT: ${{ vars.TRAEFIK_ENTRYPOINT }}
+          TRAEFIK_CERTRESOLVER: ${{ vars.TRAEFIK_CERTRESOLVER }}
+          TRAEFIK_NETWORK: ${{ vars.TRAEFIK_NETWORK }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          # 私有/限流时先登录（可选 secret，有则用）。token 走 stdin，不拼进远端命令行。
+          if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+            printf '%s' "$GHCR_PULL_TOKEN" | SSH "docker login ghcr.io -u '${GHCR_USER}' --password-stdin"
+          fi
+          SSH "cd '${DEPLOY_PATH}' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_TAG='${IMAGE_TAG}' DLZ_DOMAIN='${DLZ_DOMAIN:-}' TRAEFIK_ENTRYPOINT='${TRAEFIK_ENTRYPOINT:-}' TRAEFIK_CERTRESOLVER='${TRAEFIK_CERTRESOLVER:-}' TRAEFIK_NETWORK='${TRAEFIK_NETWORK:-}' CONFIG_VERSION='${CONFIG_VERSION}' docker stack deploy -c stack.yml --with-registry-auth duolinzao"
+      - name: 等 duolinzao_app 收敛到新镜像（超时失败）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          WANT="ghcr.io/moderras/duolinzao:${IMAGE_TAG}"
+          for _ in $(seq 1 40); do
+            STATE="$(SSH "docker service inspect duolinzao_app --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
+            SPEC="$(SSH "docker service inspect duolinzao_app --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'" 2>/dev/null || true)"
+            RUNNING="$(SSH "docker service ps duolinzao_app --filter desired-state=running --format '{{.Image}} {{.CurrentState}}'" 2>/dev/null | grep -c "^${WANT}.*Running" || true)"
+            RUNNING="${RUNNING:-0}"
+            echo "update=${STATE} spec=${SPEC} running=${RUNNING}"
+            case "${STATE}" in
+              *rollback*|*paused*) echo "更新失败：${STATE}"; exit 1;;
+            esac
+            if [ "${SPEC}" = "${WANT}" ] && [ "${RUNNING}" -ge 1 ] && { [ -z "${STATE}" ] || [ "${STATE}" = "<no value>" ] || [ "${STATE}" = "completed" ]; }; then
+              echo CONVERGED
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "收敛超时"; exit 1
+      - name: 公网健康检查 https://域名/healthz（带重试）
+        run: |
+          set -euo pipefail
+          DOMAIN="${DLZ_DOMAIN:-example.com}"
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://${DOMAIN}/healthz"; then
+              echo; echo HEALTHY
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "健康检查失败"; exit 1
+      - name: 清理旧镜像
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "docker image prune -f"
