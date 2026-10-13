@@ -101,7 +101,7 @@ deploy job 条件：主仓 + `refs/heads/master` + `push` 事件。fork 的 mast
 
 1. `test` / `e2e` / `e2e-scale` 全绿 → `image` 构建并推 `ghcr.io/moderras/duolinzao:sha-<commit>`（+ `latest`）。
 2. `deploy`：算 `CONFIG_VERSION`（`deploy/config.toml` 的 sha256 前 12 位，配置一改名一变即触发服务更新），scp `stack.yml` + `config.toml` 到 `DEPLOY_PATH`；`IMAGE_TAG`/`DLZ_DOMAIN`/Traefik 四变量/`CONFIG_VERSION` 注入后 `docker stack deploy -c stack.yml --with-registry-auth duolinzao`。
-3. 轮询 `duolinzao_app`：spec 镜像等于新 tag 且有 Running 任务、`UpdateStatus` 非失败态（10 分钟超时即失败；`failure_action: rollback` 已由 Swarm 自动回滚）。
+3. 轮询 `duolinzao_app`：spec 或运行中任务的镜像以新 tag 为前缀即可（允许 Swarm 解析后的 `@sha256:...`），且有 Running 任务、`UpdateStatus` 非 rollback/paused（10 分钟超时即失败；`failure_action: rollback` 已由 Swarm 自动回滚）。
 4. runner `curl https://域名/healthz` 重试 5 分钟。
 5. `docker image prune -f` 清旧镜像。
 
