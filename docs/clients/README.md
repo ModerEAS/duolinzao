@@ -4,7 +4,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [design.md](design.md) | 完整设计：第一版为**员工端（竖屏）完整功能**；登录与账户设置与 Web 同步（含邮箱 App Links + OTP）；注册即登录后绑定 Passkey；只从自家服务器 `/app/` 分发与应用内更新；minSdk 30；工作台日后竖屏设计；鸿蒙暂缓 |
+| [design.md](design.md) | 完整设计：第一版为**员工端（竖屏）完整功能**；登录与账户设置与 Web 同步（邮箱登录为 OTP，无 magic link）；注册即登录后绑定 Passkey；只从自家服务器 `/app/` 分发与应用内更新；minSdk 30；工作台日后竖屏设计；鸿蒙暂缓 |
 | [../requirements-phase1.md](../requirements-phase1.md) | 一期需求正文（权威） |
 | [../ui/README.md](../ui/README.md) | Web 界面参考；原生信息结构对齐即可 |
 

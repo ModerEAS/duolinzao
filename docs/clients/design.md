@@ -14,7 +14,7 @@ UI 参考：[docs/ui](../ui/README.md)
 | 第一版范围 | **只做员工端（竖屏）**，按**完整功能**交付：登录 / 邀请注册 / 报餐 / 班制 / 我的食堂（可改）/ 评分 / 站内通知 / 设备与 Passkey / 新设备确认 / 应用内更新 |
 | App 地位 | 与 Web **平级的一等公民**：App 内可绑定 Passkey；邀请注册时同步绑定 Passkey |
 | 工作台 | 食堂 / 管理员 / 总管工作台**不做横屏**；日后另行设计为**竖屏工作台**，届时补充本文 |
-| 登录方式 | 与 Web **同步**：Passkey / TOTP / 邮箱登录（按站点开关）/ 密码，Passkey 默认优先；邮箱登录同时支持 **App Links 深链**与**邮箱一次性验证码（OTP）** |
+| 登录方式 | 与 Web **同步**：Passkey / **认证器 TOTP** / **邮箱 OTP**（按站点开关）/ 密码，Passkey 默认优先；邮箱登录**仅**验证码，**不再**使用 magic link / App Links |
 | 账户设置 | 与 Web **同步**：绑定邮箱、TOTP 设置等 |
 | 注册 | `/api/register` 成功即返回登录会话（**需改服务端**，§4.5）；Web 与 App 相同：随后进入 Passkey 绑定（可暂时跳过 / 不支持自动跳过）；**不走**新设备确认 |
 | 改包方式 | 修改**已构建的通用 APK**（替换 `assets/server.json` → zipalign → apksigner 用部署方 keystore 重签 → 生成 `version.json`），**不从源码重编**；`versionCode` / `versionName` **沿用通用 APK 原值**，部署方不覆盖 |
@@ -109,7 +109,7 @@ UI 参考：[docs/ui](../ui/README.md)
 
 ### 2.2 第一版范围（仅 Android 员工端，完整功能）
 
-1. **登录**：与 Web 同步（Passkey / TOTP / 邮箱登录〔App Links + 邮箱 OTP〕 / 密码）；默认 Passkey（Credential Manager）；无可用凭据 / 无凭据提供方或 GMS / 取消 / 失败时自动回退密码（§3.2 / §3.2.4）
+1. **登录**：与 Web 同步（Passkey / 认证器 TOTP / 邮箱 OTP / 密码）；默认 Passkey（Credential Manager）；无可用凭据 / 无凭据提供方或 GMS / 取消 / 失败时自动回退密码（§3.2 / §3.2.4）
 2. **邀请注册**：注册成功即登录，随后直接绑定 Passkey（§3.2.3）
 2a. **账户设置**：与 Web 同步（绑定邮箱 `/api/me/email`、TOTP 设置 `/api/me/totp/*` 等）
 3. **设备与 Passkey**：App 内绑定、解绑 Passkey；设备列表与移除（`/api/devices*`）
@@ -145,7 +145,7 @@ UI 参考：[docs/ui](../ui/README.md)
 
 ### 3.2 登录与 Passkey（Android 平台 API）
 
-全站方式优先级与 Web 一致：**Passkey → TOTP → 邮箱登录（可关；App Links magic link 与邮箱 OTP）→ 密码**。
+全站方式优先级与 Web 一致：**Passkey → 认证器 TOTP → 邮箱 OTP（可关）→ 密码**。邮箱登录**只**发验证码，不再提供 magic link。
 
 **登录流（已确认）：默认 Passkey；密码仅备用 / 回退。**
 
@@ -155,7 +155,7 @@ UI 参考：[docs/ui](../ui/README.md)
   │     ├─ 成功 → 建立会话（cookie）→ 进 App
   │     ├─ 无可用凭据 / 平台不支持 / 用户取消 / 断言失败
   │     │     → 自动切换到其他方式（密码为默认备用）
-  ├─ 其他方式：TOTP（`POST /api/session/totp`）；邮箱登录（按站点开关）：App Links 深链消费 magic link，或邮箱一次性验证码（§3.2.4）；与 Web 一致；可用方式以 `GET /api/session/methods` 为准
+  ├─ 其他方式：认证器 TOTP（`POST /api/session/totp`）；邮箱 OTP（按站点开关，§3.2.4）；与 Web 一致；可用方式以 `GET /api/session/methods` 为准（邮箱开启时返回 `email_otp`，**不再**返回 `magic_link`）
   └─ 次要入口：用户主动点「使用密码」也可直接进密码表单（不强制先失败一次）
 ```
 
@@ -200,33 +200,34 @@ Web 与 App 共用同一流程与同一服务端改动：
 5. 不支持 Passkey：自动跳过此步。
 6. 跳过的用户之后可在「设备与 Passkey」补绑。
 
-#### 3.2.4 邮箱登录（App Links + 邮箱 OTP）
+#### 3.2.4 邮箱 OTP 登录（Web 与 App；取代 magic link）
 
-邮箱能力开启时（`GET /api/session/methods`），App 提供两种邮箱登录路径，**不强制只能深链**：
+邮箱能力开启时，**唯一**的邮箱登录方式是一次性验证码（OTP）。**不再**提供 magic link，也**不**为登录配置 App Links / `assetlinks.json`。
 
-**A. Magic link + App Links（深链进 App）**
+流程（Web 与 App 相同）：
 
-1. 用户请求 `POST /api/session/magic-link/request`（body `{ username }`），邮件内含 `{origin}/login?magic={token}`（现有行为）。
-2. App 用 **Android App Links** 声明对该 host 的 `/login`（或等价路径）意图过滤；用户点邮件链接可直接打开 App。
-3. App 取出 `magic` token，调用 `POST /api/session/magic-link/consume`（body `{ token }`）建立会话。
-4. 若链接在浏览器打开：仍按 Web 现有流程消费 token；用户也可回到 App 用其他方式登录。
+1. 用户输入用户名 → `POST /api/session/email-otp/request` → 向已绑定邮箱发送验证码。
+2. 用户填入验证码 → `POST /api/session/email-otp/verify` → 校验成功后建立会话（Set-Cookie）。
+3. 邮箱能力关闭、未绑邮箱：不可用（与现有邮箱开关一致）。
+4. **认证器 TOTP**（`/api/session/totp`）仍是独立登录方式，与邮箱 OTP 分开。
 
-服务端 / 部署方配套（App Links）：
+**验证码算法与窗口（已拍板默认）：**
 
-- 每个部署站点提供 `GET {baseUrl}/.well-known/assetlinks.json`（Digital Asset Links）。
-- 内容包含本部署的 Android **包名**与**签名证书 SHA-256 指纹**（来自该部署方用于重签的 keystore，与 `/app/` 上 APK 一致）。
-- 指纹随部署方 keystore 变化；开源仓库只给示例格式，不写真实指纹。
-- magic link URL 的 host 须与包内 `baseUrl` / WebAuthn origin 同域，否则 App Links 对不上。
+| 项 | 决定 |
+|----|------|
+| 算法风格 | 与认证器 TOTP **同一套生成风格**（现实现：HMAC-SHA1、**6 位**数字；与 `totp_rs` / `/api/me/totp/*` 一致的码型） |
+| 有效窗口 | **10 分钟**（邮箱 OTP 专用；认证器 TOTP 仍为其自身的 30s 步长，互不影响） |
+| 重发间隔 | **≥ 60 秒**（未到间隔的重发请求拒绝） |
+| 失败锁定 | 连续 **5 次**校验失败 → 锁定该账号的邮箱 OTP 校验 **15 分钟** |
 
-**B. 邮箱一次性验证码（OTP）**
+说明：邮箱 OTP 的密钥 / 挑战由服务端按次签发并邮寄，不是用户认证器里那枚长期 secret；「同一算法风格」指码的生成与位数与认证器 TOTP 对齐，有效期与限流按上表。
 
-1. App 内输入用户名 → 请求发送邮箱验证码 → 用户填收到的短码 → 校验成功后建立会话（Set-Cookie）。
-2. **现有路由没有邮箱 OTP**：目前仅有 magic-link（`/api/session/magic-link/request|consume`）与认证器 TOTP（`/api/session/totp`）。**需新增服务端接口**（见 §4.5），例如：
-   - `POST /api/session/email-otp/request`：按用户名向已绑定邮箱发一次性验证码（邮箱能力关闭时不可用；未绑邮箱则报错）。
-   - `POST /api/session/email-otp/verify`：校验验证码并建立会话。
-3. 具体路径名可在实现时微调，但须与 Web 共用；邮箱关闭时两种邮箱登录均不可用。
-4. 一期需求明确**不做短信 OTP**；此处仅指**邮箱**验证码，与短信无关。
+**`GET /api/session/methods`：**
 
+- 邮箱开启时返回 **`email_otp`**（以及既有 `passkey`、`totp`、`password` 等）。
+- **不再**返回 `magic_link`。
+
+**服务端现状与改动：** 现有 `/api/session/magic-link/request|consume` 废弃并移除（或改为不可用）；新增 `email-otp` 的 request / verify。详见 §4.5。一期需求中的「不做短信 OTP」不变——此处仅为**邮箱**验证码。
 
 ### 3.3 员工端 API（第一版必接）
 
@@ -242,7 +243,7 @@ Web 与 App 共用同一流程与同一服务端改动：
 | 评分 | GET / POST | `/api/me/score-targets`、`/api/scores` | −2～+2，菜/饭/汤分开 |
 | 通知 | GET / POST | `/api/notifications`、`/api/notifications/:id/read` | |
 | 注册 | POST | `/api/register` | 成功即登录，见 §3.2.3 |
-| 登录方式 | GET / POST | `/api/session/methods`、`/api/session/totp`、`/api/session/magic-link/*`、邮箱 OTP（**待新增**，§3.2.4 / §4.5） | 与 Web 同步 |
+| 登录方式 | GET / POST | `/api/session/methods`（含 `email_otp`）、`/api/session/totp`、`/api/session/email-otp/request`、`/api/session/email-otp/verify`（**取代** magic-link） | 与 Web 同步；§3.2.4 / §4.5 |
 | 账户设置 | PUT / POST | `/api/me/email`、`/api/me/totp/setup`、`/api/me/totp/confirm` | 与 Web 同步 |
 | 设备 | GET / DELETE | `/api/devices`、`/api/devices/:id` | |
 | 新设备确认 | POST / GET | `/api/login-approvals*` | 见 §3.2.1 |
@@ -317,8 +318,13 @@ APK 内例如 `assets/server.json`：
 
 1. **`POST /api/register` 成功即登录**：注册成功时建立会话并返回 Set-Cookie（`dlz_session`），与登录接口一致；Web 与 App 共用。注册自动登录**不**进入新设备确认流。
 2. **注册后 Passkey 绑定步骤（Web 与 App）**：注册成功进绑定页；支持则默认绑定且可「暂时跳过」，不支持则自动跳过（产品流，主要改前端；服务端已有 passkey register 接口）。
-3. **App Links**：每个部署站点托管 `/.well-known/assetlinks.json`（包名 + 该部署重签证书 SHA-256）；供 magic link 深链进 App（§3.2.4 A）。
-4. **邮箱一次性验证码（OTP）**：新增发送 / 校验接口（现有仅有 magic-link 与认证器 TOTP，见 §3.2.4 B）；与 Web 共用；受邮箱能力开关约束。**不是短信 OTP**。
+3. **邮箱登录改为 OTP（取代 magic link）**：
+   - 新增 `POST /api/session/email-otp/request` 与 `POST /api/session/email-otp/verify`（路径可微调，须 Web / App 共用）；参数见 §3.2.4（6 位、与认证器 TOTP 同算法风格、有效 10 分钟、重发 ≥60s、5 次失败锁 15 分钟）。
+   - `GET /api/session/methods`：邮箱开启时返回 **`email_otp`**，**不再**返回 `magic_link`。
+   - **废弃并移除**（或永久关闭）`/api/session/magic-link/request` 与 `/consume`；登录不再发含链接的邮件，也不再为登录准备 App Links / `assetlinks.json`。
+   - **Web 登录页**与 App 一并改为「邮箱验证码」UI，去掉 magic link 入口。
+   - **认证器 TOTP**（`/api/session/totp`、`/api/me/totp/*`）保持不变，仍是独立登录方式。
+   - 仍**不做短信 OTP**。
 
 ---
 
@@ -338,7 +344,7 @@ APK 内例如 `assets/server.json`：
 |------|------|------|
 | D0 | 本设计评审 | 确认后开工 |
 | D1 | `clients/android` 骨架（minSdk 30）+ `server.json` + inject 脚本 + mock 开关；服务端 `/app/` 托管与 `version.json` 生成 | assembleDebug；站点可下载 APK |
-| D2 | 登录（Passkey 优先；TOTP / 邮箱 App Links+OTP / 密码与 Web 同步）+ 邀请注册（服务端注册即登录，不走新设备确认）后绑定 Passkey + 账户设置 + 设备与 Passkey 页 + 新设备确认（含 App 内批准）；服务端 assetlinks + 邮箱 OTP | 演示环境跑通 |
+| D2 | 登录（Passkey 优先；认证器 TOTP / 邮箱 OTP / 密码与 Web 同步）+ 邀请注册（服务端注册即登录，不走新设备确认）后绑定 Passkey + 账户设置 + 设备与 Passkey 页 + 新设备确认（含 App 内批准）；服务端以 email-otp 取代 magic-link | 演示环境跑通 |
 | D3 | 首页 / 本周报餐 + 班制与模板 + 我的食堂（可改） | 报餐主路径对齐 Web |
 | D4 | 评分 + 站内通知 + 应用内更新 | **第一版完整发布**（员工端） |
 | 后续 | 竖屏工作台：另行设计后补充本文 | 待设计 |
@@ -415,7 +421,7 @@ docs/clients/
 8. 应用内更新第一版即包含，服务端配套支持（§4.4）。
 9. minSdk 30（Android 11）。
 10. 卓易通不作交付目标，但核心流程不依赖仅 GMS 能力。
-11. 登录方式与账户设置与 Web 同步；邮箱登录同时支持 App Links 深链与邮箱 OTP（需服务端配套）。
+11. 登录方式与账户设置与 Web 同步；邮箱登录**仅** OTP（Web / App 相同），废除 magic link / App Links 登录；认证器 TOTP 仍独立保留。
 12. 注册接口成功即登录（需改服务端）；Web 与 App 相同：随后 Passkey 绑定（可暂时跳过 / 不支持自动跳过）；注册自动登录不走新设备确认。
 13. 持有工作台角色的账号：第一版进员工端，下一阶段（竖屏工作台）处理。
 14. `version.json` 的 `versionCode` / `versionName` 沿用通用 APK，部署方不覆盖。
@@ -431,4 +437,5 @@ docs/clients/
 | 2026-10-13 | 修订：登录流确认——默认 Passkey，密码仅备用/回退 |
 | 2026-10-14 | 修订：第一版为员工端完整功能（注册同步绑定 Passkey、App 内绑定页、新设备确认含 App 内批准、我的食堂可改、班制、评分、通知）；工作台改为日后竖屏设计；只从自家服务器分发（不用 GitHub Releases）；应用内更新进第一版并补服务端支持；minSdk 30 及覆盖率依据；卓易通兼容说明 |
 | 2026-10-14 | 修订：改包定为修改已构建 APK（替换 server.json + zipalign + apksigner + 生成 version.json）；注册接口成功即登录（服务端改动）；注册时 Passkey 绑定可暂时跳过 / 不支持自动跳过；登录方式与账户设置与 Web 同步；工作台角色账号下一阶段处理 |
-| 2026-10-15 | 修订：Web 注册与 App 同流程（绑定 Passkey 可跳过）；注册自动登录不走新设备确认；邮箱登录同时支持 App Links 与邮箱 OTP（补服务端需求）；version.json 版本号沿用通用 APK |
+| 2026-10-15 | 修订：Web 注册与 App 同流程（绑定 Passkey 可跳过）；注册自动登录不走新设备确认；version.json 版本号沿用通用 APK |
+| 2026-10-15 | 修订：邮箱登录改为**仅 OTP**（废除 magic link / App Links）；码型对齐认证器 TOTP、有效 10 分钟；重发 ≥60s、5 次失败锁 15 分钟；`methods` 返回 `email_otp`；Web 登录 UI 同步改 OTP |
