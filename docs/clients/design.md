@@ -14,7 +14,7 @@ UI 参考：[docs/ui](../ui/README.md)
 | 第一版范围 | **只做员工端（竖屏）**，按**完整功能**交付：登录 / 邀请注册 / 报餐 / 班制 / 我的食堂（可改）/ 评分 / 站内通知 / 设备与 Passkey / 新设备确认 / 应用内更新 |
 | App 地位 | 与 Web **平级的一等公民**：App 内可绑定 Passkey；邀请注册时同步绑定 Passkey |
 | 工作台 | 食堂 / 管理员 / 总管工作台**不做横屏**；日后另行设计为**竖屏工作台**，届时补充本文 |
-| 登录方式 | 与 Web **同步**：Passkey / **认证器 TOTP** / **邮箱 OTP**（按站点开关）/ 密码，Passkey 默认优先；邮箱登录**仅**验证码，**不再**使用 magic link / App Links；验证码与切换期残留 magic token 均**用后即废**；`email-otp/request` **一律返回 accepted**（防枚举） |
+| 登录方式 | 与 Web **同步**：Passkey / **认证器 TOTP** / **邮箱 OTP**（按站点开关）/ 密码，Passkey 默认优先；邮箱登录**仅**验证码，**不再**使用 magic link / App Links；邮箱 OTP 有效 **10 分钟**，一次性靠**记下已用 TOTP 时间窗（step/timestamp）**——同窗再验拒绝；旧 magic link **consume-on-use**；`email-otp/request` **一律 accepted**（无账号/邮箱不发信） |
 | 账户设置 | 与 Web **同步**：绑定邮箱、TOTP 设置等 |
 | 注册 | `/api/register` 成功即返回登录会话（**需改服务端**，§4.5）；Web 与 App 相同：随后进入 Passkey 绑定（可暂时跳过 / 不支持自动跳过）；**不走**新设备确认 |
 | 改包方式 | 修改**已构建的通用 APK**（替换 `assets/server.json` → zipalign → apksigner 用部署方 keystore 重签 → 生成 `version.json`），**不从源码重编**；`versionCode` / `versionName` **沿用通用 APK 原值**，部署方不覆盖 |
@@ -219,12 +219,12 @@ Web 与 App 共用同一流程与同一服务端改动：
 | 有效窗口 | **10 分钟**（邮箱 OTP 专用；认证器 TOTP 仍为其自身的 30s 步长，互不影响） |
 | 重发间隔 | **≥ 60 秒**（未到间隔的重发请求拒绝） |
 | 失败锁定 | 连续 **5 次**校验失败 → 锁定该账号的邮箱 OTP 校验 **15 分钟** |
-| 一次性 | 校验成功后记下该码对应的 **TOTP 时间窗**；同一时间窗再次提交一律拒绝（邮箱 OTP 与认证器 TOTP 同此规则）。算法本身不保证一次性，靠服务端记「已用时间窗」 |
+| 一次性 | 校验成功后**持久化该码对应的 TOTP 时间窗（step / timestamp）**；之后同一已存时间窗再验一律拒绝（邮箱 OTP 与认证器 TOTP 同此规则）。算法本身不保证一次性，靠服务端记「已用时间窗」 |
 | 防枚举 | `POST /api/session/email-otp/request` **一律返回 accepted**（与账号是否存在、是否已绑邮箱无关）；仅当账号存在且已绑邮箱时才发信；不存在则假装已发 |
 
 说明：邮箱 OTP 的密钥 / 挑战由服务端按次签发并邮寄，不是用户认证器里那枚长期 secret；「同一算法风格」指码的生成与位数与认证器 TOTP 对齐，有效期与限流按上表。
 
-**切换期残留的 magic link token（若仍有未消费记录）：** 用后即废（consume-on-use），用过即作废。**不**再设更长的双轨接受窗口；邮箱登录以 OTP 为唯一方式。邮箱 OTP / 认证器 TOTP 均靠记下已用时间窗做到同窗不可复用。
+**切换期残留的 magic link token（若仍有未消费记录）：** consume-on-use（用过即作废）。**不**再设更长的双轨接受窗口；邮箱登录以 OTP 为唯一方式（有效期仍 10 分钟）。邮箱 OTP / 认证器 TOTP 的防重放：只存已成功使用的时间窗，同窗拒绝。
 
 **`GET /api/session/methods`：**
 
@@ -330,7 +330,7 @@ APK 内例如 `assets/server.json`：
    - **认证器 TOTP**（`/api/session/totp`、`/api/me/totp/*`）保持不变，仍是独立登录方式。
    - 仍**不做短信 OTP**。
    - **防枚举**：`email-otp/request` 一律返回 accepted；仅账号存在且已绑邮箱时发信。
-   - **一次性**：校验成功后持久化该码对应的 TOTP 时间窗；同一时间窗不可再验。切换期若仍有未消费的 magic link token，用后即废（consume-on-use），不另设双轨接受窗口。
+   - **一次性**：校验成功后持久化该码对应的 TOTP 时间窗（step / timestamp）；之后对同一已存时间窗的 verify 一律拒绝。邮箱 OTP 有效期仍为 10 分钟。切换期残留 magic link token：consume-on-use，不另设双轨窗口。
 
 ---
 
@@ -431,7 +431,7 @@ docs/clients/
 12. 注册接口成功即登录（需改服务端）；Web 与 App 相同：随后 Passkey 绑定（可暂时跳过 / 不支持自动跳过）；注册自动登录不走新设备确认。
 13. 持有工作台角色的账号：第一版进员工端，下一阶段（竖屏工作台）处理。
 14. `version.json` 的 `versionCode` / `versionName` 沿用通用 APK，部署方不覆盖。
-15. 邮箱 OTP / 认证器 TOTP：校验成功后记下已用时间窗，同窗不可再验；切换期残留 magic link token 用后即废，不设更长双轨窗口。`email-otp/request` 一律返回 accepted（防枚举），仅存在且已绑邮箱的账号才发信。
+15. 邮箱 OTP（有效 10 分钟）/ 认证器 TOTP：校验成功后记下已用 TOTP 时间窗（step / timestamp），同窗再验拒绝；切换期残留 magic link token 为 consume-on-use。`email-otp/request` 一律 accepted（防枚举），无账号或未绑邮箱不发信。
 
 ---
 
@@ -448,3 +448,4 @@ docs/clients/
 | 2026-10-15 | 修订：邮箱登录改为**仅 OTP**（废除 magic link / App Links）；码型对齐认证器 TOTP、有效 10 分钟；重发 ≥60s、5 次失败锁 15 分钟；`methods` 返回 `email_otp`；Web 登录 UI 同步改 OTP |
 | 2026-10-15 | 修订：邮箱 OTP 与切换期残留 magic token 均为用后即废（无更长双轨窗口）；email-otp/request 一律返回 accepted，仅存在且已绑邮箱才发信 |
 | 2026-10-15 | 修订：一次性实现为记录已用 TOTP 时间窗（同窗拒绝），非仅依赖算法 |
+| 2026-10-15 | 修订：明确一次性=持久化已用 TOTP 时间窗（step/timestamp），同窗 verify 拒绝；邮箱 OTP 有效期仍 10 分钟；magic link consume-on-use；request 一律 accepted |
