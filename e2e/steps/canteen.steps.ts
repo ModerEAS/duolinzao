@@ -547,3 +547,39 @@ Then("不能按食堂范围批准他人设备", async () => {
   const r = await c.call(`/api/login-approvals/${id}/allow`, { method: "POST" });
   expect(r.status).toBe(403);
 });
+
+// 场景：横屏侧栏进入账户设置
+When("从左侧栏打开账户设置", async ({ page }) => {
+  await ensureCanteen(page);
+  await openSide(page, "账户");
+  await expect(page.getByRole("heading", { name: "账户设置" })).toBeVisible();
+});
+
+Then("账户设置展示只读账号、显示名、Passkey、验证器、邮箱、改密、退出和设备入口", async ({ page }) => {
+  const account = page.locator(".account");
+  await expect(account.locator(".identity")).toContainText(canteenUser);
+  await expect(account.getByRole("button", { name: "显示名", exact: true })).toBeVisible();
+  await expect(account.locator(".set-row.is-static")).toContainText(canteenUser);
+  await expect(account.getByPlaceholder("账号")).toHaveCount(0);
+
+  await account.getByRole("button", { name: "登录与安全", exact: true }).click();
+  await expect(account.getByRole("button", { name: "Passkey", exact: true })).toBeVisible();
+  await expect(account.getByRole("button", { name: "验证器", exact: true })).toBeVisible();
+  await expect(account.getByRole("button", { name: "邮箱", exact: true })).toBeVisible();
+  await expect(account.getByRole("button", { name: "密码", exact: true })).toBeVisible();
+
+  await account.getByRole("button", { name: "邮箱", exact: true }).click();
+  await expect(
+    page.getByText("邮箱能力已关闭，不能在这里绑定或修改邮箱。").or(page.getByRole("button", { name: "保存邮箱" })),
+  ).toBeVisible();
+  await account.getByRole("button", { name: "返回", exact: true }).click();
+
+  await account.getByRole("button", { name: "密码", exact: true }).click();
+  await expect(page.getByRole("button", { name: "更新密码" })).toBeVisible();
+  await account.getByRole("button", { name: "返回", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await account.getByRole("button", { name: "设备", exact: true }).click();
+  await account.getByRole("button", { name: "设备与 Passkey", exact: true }).click();
+  await expect(page.getByText("只管理本账号设备；不能按食堂批准他人的新设备")).toBeVisible();
+});
