@@ -342,6 +342,12 @@ async fn phase1_acceptance() {
         "health",
     );
     assert_eq!(health.json()["name"], "多邻灶");
+    let ver = health.json()["version"].as_str().unwrap_or("").to_string();
+    assert!(!ver.is_empty(), "health 应带 version");
+    assert!(
+        ver == env!("CARGO_PKG_VERSION") || ver.contains('+') || ver.contains('.'),
+        "version 格式异常：{ver}"
+    );
 
     let methods = must(
         api.call("GET", "/api/session/methods", None, None, None, None)

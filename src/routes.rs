@@ -198,7 +198,7 @@ fn cleared_cookie(secure: bool) -> Cookie<'static> {
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({"status": "ok", "name": "多邻灶"}))
+    Json(json!({"status": "ok", "name": "多邻灶", "version": crate::version::app_version()}))
 }
 
 async fn healthz() -> &'static str {

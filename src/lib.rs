@@ -8,6 +8,7 @@ pub mod ops;
 pub mod rbac;
 pub mod routes;
 pub mod state;
+pub mod version;
 
 pub use config::AppConfig;
 pub use routes::router;

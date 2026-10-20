@@ -37,6 +37,7 @@ import {
 } from "../api";
 import Thumb from "../components/Thumb.vue";
 import { auth } from "../session";
+import { appVersion, loadVersion } from "../version";
 
 type Tab = "meal" | "score" | "mine";
 type Screen = "home" | "shift" | "week" | "generate" | "preview" | "mine" | "bind" | "devices" | "notices";
@@ -558,7 +559,10 @@ function homeLabel(state: string) {
 }
 
 watch([screen, tab, weekAnchor, scoreDate, scoreSlot], refresh);
-onMounted(refresh);
+onMounted(() => {
+  loadVersion();
+  refresh();
+});
 </script>
 
 <template>
@@ -843,6 +847,7 @@ onMounted(refresh);
       <van-tabbar-item name="score" @click="openTab('score')">评分</van-tabbar-item>
       <van-tabbar-item name="mine" @click="openTab('mine')">我的</van-tabbar-item>
     </van-tabbar>
+    <div v-if="appVersion" class="ver">Powered by 多邻灶 · Version: {{ appVersion }}</div>
   </div>
 </template>
 
@@ -908,4 +913,5 @@ onMounted(refresh);
 .tag { margin-right: 4px; }
 .row { display: flex; justify-content: space-between; align-items: center; }
 .filters { margin-bottom: 8px; }
+.ver { text-align: center; font-size: 11px; color: #9ca3af; padding: 6px 0 10px; }
 </style>
