@@ -4,6 +4,7 @@ import { Key, Lock, Message } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { ApiError, api, type Me } from "../api";
 import { refreshSession } from "../session";
+import { appVersion, loadVersion } from "../version";
 
 const emit = defineEmits<{ enter: [] }>();
 
@@ -25,6 +26,7 @@ const regPassword = ref("");
 const wait = ref<{ id: string; poll: string; ip: string; ua: string; name: string; status: string } | null>(null);
 
 onMounted(async () => {
+  loadVersion();
   try {
     const body = await api<{ methods: string[]; email_enabled: boolean }>("/api/session/methods");
     methods.value = body.methods;
@@ -301,6 +303,7 @@ async function poll() {
       </template>
     </div>
     <p class="foot">新设备将等待已登录设备页内确认 · 不扫码</p>
+    <p v-if="appVersion" class="ver">Powered by 多邻灶 · Version: {{ appVersion }}</p>
   </div>
 </template>
 
@@ -328,5 +331,6 @@ h1 { margin: 0 0 20px; font-size: 28px; text-align: center; font-weight: 700; }
 .pwd-box { margin-top: 12px; }
 .mb { margin-bottom: 10px; }
 .foot { margin-top: 16px; font-size: 12px; color: #9ca3af; }
+.ver { margin-top: 6px; font-size: 11px; color: #b6bcc6; }
 .link { display: block; width: 100%; margin-top: 14px; border: none; background: transparent; color: #2d8a45; cursor: pointer; }
 </style>

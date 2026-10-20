@@ -22,6 +22,7 @@ import RatingPage from "./pages/RatingPage.vue";
 import RecoverPage from "./pages/RecoverPage.vue";
 import ThresholdPage from "./pages/ThresholdPage.vue";
 import { auth, can, managedCanteens, refreshSession } from "./session";
+import { loadVersion, versionFooter } from "./version";
 
 type Page =
   | "overview"
@@ -158,6 +159,7 @@ async function createCanteen() {
 }
 
 onMounted(async () => {
+  await loadVersion();
   await refreshSession();
   if (auth.me && hasLandscape.value) {
     page.value = firstPage();
@@ -199,7 +201,7 @@ onMounted(async () => {
           {{ item.label }}
         </button>
       </nav>
-      <div class="side-foot">多邻灶 · 一期</div>
+      <div class="side-foot">{{ versionFooter() }}</div>
     </aside>
     <main class="main">
       <div class="toolbar">

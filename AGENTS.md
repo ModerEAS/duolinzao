@@ -45,6 +45,18 @@
 - 中文产品名「多邻灶」；标识符 `duolinzao`
 - UI：员工端竖屏；食堂/管理端横屏。工作台统一使用左侧栏，登录页无侧栏，不并存顶栏主导航，菜单只列一期画面
 
+## Version / Release（页脚版本号，Gitea 风格）
+
+- 版本串规则（严格跟 Gitea Makefile，不插入 `+dev-`）：
+  - 正好落在 `vX.Y.Z` tag 上：显示 `X.Y.Z`（去掉 `v`，不附 commit）
+  - 非 tag / 开发构建：`git describe --tags --always`，把**第一个** `-` 换成 `+`，再去掉开头 `v`（如 `0.1.0+12-gc7d0119`）
+  - 仓库尚无 `v*` tag 时 `--always` 只给出短 sha：拼 `{Cargo.toml 版本}+0-g{sha}`（如 `0.1.0+0-gc7d0119`）；无 git 时回退 `{版本}+unknown`
+- 展示位置（全局同一文案）：登录页 + 横屏侧栏底 + 员工竖屏底，文案 `Powered by 多邻灶 · Version: <ver>`
+- API：`GET /api/health` JSON 带 `version` 字段；`GET /healthz` 保持纯 `ok`、不加版本（部署探针用）
+- 注入方式：`build.rs` 编译期注入（`DLZ_VERSION` 显式值优先，原样用；否则抓 `git describe` 原始串进 `DLZ_GIT_DESCRIBE`，由 `src/version.rs::describe_to_version` 归一化）；归一化逻辑在 `src/version.rs`，单测覆盖
+- 镜像 tag 关系：GHCR 的 `sha-<commit>` / `latest` 只做部署寻址（Swarm 按不可变 tag 拉镜像），页脚主文案用 describe 串，不直接展示 `sha-…` 前缀串；Docker 构建经 `ARG DLZ_VERSION` + `ARG GITHUB_SHA` 透传版本（`.dockerignore` 忽略 `.git`，容器内不跑 `git describe`），CI 在 image job 算好串后以 build-args 传入
+- 日常 bump：助手可按规则自行 bump `Cargo.toml`，必要时同步 `web/package.json`（当前基线均为 `0.1.0`）；不要为页脚功能单独打 git tag
+
 ## Don't
 
 - 不要把 SHA/MD5 当密码存储；不要上短信 OTP
