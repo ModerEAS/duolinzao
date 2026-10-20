@@ -17,7 +17,11 @@ use crate::rbac::AuthHit;
 use crate::state::AppState;
 
 pub const SESSION_DAYS: i64 = 30;
-pub const MAGIC_LINK_MINUTES: i64 = 15;
+pub const EMAIL_OTP_MINUTES: i64 = 10;
+pub const EMAIL_OTP_STEP_SECONDS: i64 = 600;
+pub const EMAIL_OTP_RESEND_SECONDS: i64 = 60;
+pub const EMAIL_OTP_MAX_FAILURES: i64 = 5;
+pub const EMAIL_OTP_LOCK_MINUTES: i64 = 15;
 pub const LOGIN_WINDOW_MINUTES: i64 = 15;
 pub const LOGIN_MAX_FAILURES: i64 = 20;
 pub const PASSKEY_CHALLENGE_MINUTES: i64 = 5;

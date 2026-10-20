@@ -8,6 +8,7 @@ import {
   inviteCode,
   openTab,
   registerNewUser,
+  rootSession,
 } from "./helpers";
 
 const { Given, When, Then } = createBdd(test);
@@ -115,15 +116,21 @@ When("打开登录页", async ({ page }) => {
   await page.goto("/");
 });
 
-Then("登录入口按 Passkey、TOTP、邮箱 magic link、密码顺序展示", async ({ page }) => {
+Then("登录入口按 Passkey、TOTP、邮箱验证码、密码顺序展示", async ({ page }) => {
+  // 开启态自包含：先开邮箱再断言四入口顺序，不依赖其它场景的开关状态。
+  const s = await rootSession();
+  await s.call("/api/admin/settings/email", { method: "PUT", body: { enabled: true } });
+  await page.goto("/");
   const texts = await page.getByRole("button").allTextContents();
   const flat = texts.join("\n");
   const passkey = flat.indexOf("使用 Passkey 登录");
   const totp = flat.indexOf("使用 TOTP");
+  const otp = flat.indexOf("邮箱验证码");
   const pwd = flat.indexOf("密码登录（兜底）");
   expect(passkey).toBeGreaterThanOrEqual(0);
   expect(totp).toBeGreaterThan(passkey);
-  expect(pwd).toBeGreaterThan(totp);
+  expect(otp).toBeGreaterThan(totp);
+  expect(pwd).toBeGreaterThan(otp);
 });
 
 Then("不做短信 OTP", async ({ page }) => {
@@ -131,9 +138,12 @@ Then("不做短信 OTP", async ({ page }) => {
   await expect(page.locator(".side")).toHaveCount(0);
 });
 
-Then("若总管已关闭邮箱能力则不出现 magic link", async ({ page }) => {
-  await expect(page.getByText("邮箱能力关闭，不显示 magic link")).toBeVisible();
-  await expect(page.getByText("邮箱 magic link", { exact: true })).toHaveCount(0);
+Then("若总管已关闭邮箱能力则不出现邮箱验证码", async ({ page }) => {
+  const s = await rootSession();
+  await s.call("/api/admin/settings/email", { method: "PUT", body: { enabled: false } });
+  await page.goto("/");
+  await expect(page.getByText("邮箱能力关闭，不显示邮箱验证码")).toBeVisible();
+  await expect(page.getByText("邮箱验证码", { exact: true })).toHaveCount(0);
 });
 
 // 场景：绑定多个食堂作为报餐使用范围（seed 只有一个食堂，绑定可用食堂）

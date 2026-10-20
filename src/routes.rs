@@ -54,8 +54,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session/password", post(login_password))
         .route("/api/session/totp", post(login_totp))
         .route("/api/session/logout", post(logout))
-        .route("/api/session/magic-link/request", post(magic_request))
-        .route("/api/session/magic-link/consume", post(magic_consume))
+        .route("/api/session/email-otp/request", post(email_otp_request))
+        .route("/api/session/email-otp/verify", post(email_otp_verify))
         .route("/api/session/passkey/start", post(passkey_start))
         .route("/api/session/passkey/finish", post(passkey_finish))
         .route("/api/passkeys/register/start", post(passkey_register_start))
@@ -220,11 +220,18 @@ struct RegisterBody {
 
 async fn register(
     State(state): State<AppState>,
+    ip: ClientIp,
+    ua: UserAgent,
     Json(body): Json<RegisterBody>,
 ) -> Result<impl IntoResponse, AppError> {
-    let created =
-        session::register(&state, &body.username, &body.invite_code, &body.password).await?;
-    Ok((StatusCode::CREATED, Json(created)))
+    // 注册成功即登录：直接带上会话 cookie，不用再登一次。
+    let (created, issued) =
+        session::register(&state, &body.username, &body.invite_code, &body.password, &ua.0, &ip.0)
+            .await?;
+    Ok((
+        StatusCode::CREATED,
+        with_token(&issued.raw_token, state.config.cookie_secure, created),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -278,31 +285,33 @@ async fn logout(
 }
 
 #[derive(Deserialize)]
-struct MagicRequest {
+struct EmailOtpRequest {
     username: String,
 }
 
-async fn magic_request(
+async fn email_otp_request(
     State(state): State<AppState>,
-    Json(body): Json<MagicRequest>,
+    Json(body): Json<EmailOtpRequest>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(
-        session::request_magic_link(&state, &body.username).await?,
+        session::request_email_otp(&state, &body.username).await?,
     ))
 }
 
 #[derive(Deserialize)]
-struct MagicConsume {
-    token: String,
+struct EmailOtpVerify {
+    username: String,
+    code: String,
 }
 
-async fn magic_consume(
+async fn email_otp_verify(
     State(state): State<AppState>,
     ip: ClientIp,
     ua: UserAgent,
-    Json(body): Json<MagicConsume>,
+    Json(body): Json<EmailOtpVerify>,
 ) -> Result<impl IntoResponse, AppError> {
-    let issued = session::consume_magic_link(&state, &body.token, &ua.0, &ip.0).await?;
+    let issued =
+        session::verify_email_otp(&state, &body.username, &body.code, &ua.0, &ip.0).await?;
     Ok(with_token(
         &issued.raw_token,
         state.config.cookie_secure,

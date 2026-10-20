@@ -7,7 +7,8 @@ use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCreden
 use super::{
     audit, audit_user, check_login_rate, email_enabled, ensure_password, ensure_username,
     issue_session, login_body, normalize_display_name, record_login, too_many_failures,
-    IssuedSession, MAGIC_LINK_MINUTES, PASSKEY_CHALLENGE_MINUTES,
+    IssuedSession, EMAIL_OTP_LOCK_MINUTES, EMAIL_OTP_MAX_FAILURES, EMAIL_OTP_MINUTES,
+    EMAIL_OTP_RESEND_SECONDS, EMAIL_OTP_STEP_SECONDS, PASSKEY_CHALLENGE_MINUTES,
 };
 use crate::crypto::{
     decrypt, encrypt, hash_password, random_bytes, random_token, sha256_hex, verify_password,
@@ -108,7 +109,7 @@ pub async fn methods(state: &AppState) -> Result<Value, AppError> {
     let mut methods = vec!["passkey", "totp"];
     let enabled = email_enabled(state).await?;
     if enabled {
-        methods.push("magic_link");
+        methods.push("email_otp");
     }
     methods.push("password");
     Ok(json!({
@@ -117,12 +118,16 @@ pub async fn methods(state: &AppState) -> Result<Value, AppError> {
     }))
 }
 
+/// 注册成功即登录：事务提交后签发与密码登录相同的会话（不走 `login_approval` 新设备确认）。
+/// 审计保留 register 一条并在 summary 标明已发会话，另记 method=`register` 的登录审计。
 pub async fn register(
     state: &AppState,
     username: &str,
     invite_code: &str,
     password: &str,
-) -> Result<Value, AppError> {
+    user_agent: &str,
+    ip: &str,
+) -> Result<(Value, IssuedSession), AppError> {
     let username = ensure_username(username)?;
     ensure_password(password)?;
     if invite_code.trim().is_empty() {
@@ -216,13 +221,30 @@ pub async fn register(
             action: "register".into(),
             object_type: Some("account".into()),
             object_id: Some(account_id.to_string()),
-            summary: json!({"username": username}),
+            summary: json!({"username": username, "auto_login": true}),
             result: "ok".into(),
         },
     )
     .await?;
     tx.commit().await?;
-    Ok(json!({"account_id": account_id, "username": username}))
+    // 注册自动登录：与密码登录相同的会话，不进新设备确认流。
+    let issued = issue_session(&state.pool, now, account_id, user_agent, ip).await?;
+    audit(
+        state,
+        Some(account_id),
+        Some(username.clone()),
+        None,
+        "login",
+        Some("session"),
+        Some(issued.session_id.to_string()),
+        json!({"method": "register"}),
+        "ok",
+    )
+    .await?;
+    Ok((
+        json!({"account_id": account_id, "username": username, "ok": true}),
+        issued,
+    ))
 }
 
 pub async fn login_password(
@@ -353,7 +375,7 @@ pub async fn update_display_name(
     Ok(json!({"display_name": display_name}))
 }
 
-/// 自助改密：校验当前密码，保留当前会话，吊销该账号其它会话，并作废未消费的 magic link。
+/// 自助改密：校验当前密码，保留当前会话，吊销该账号其它会话，并作废未消费的邮箱 OTP。
 /// 总管找回仍走 `revoke_all_sessions`，连当前会话一起吊销。
 pub async fn change_password(
     state: &AppState,
@@ -410,6 +432,11 @@ pub async fn change_password(
     .bind(user.account_id)
     .execute(&mut *tx)
     .await?;
+    // 待验证的邮箱 OTP 一并作废（magic_link 表只留历史行，不再写入新 token）。
+    sqlx::query("DELETE FROM email_otp_challenge WHERE account_id = $1")
+        .bind(user.account_id)
+        .execute(&mut *tx)
+        .await?;
     crate::audit::write_audit(
         &mut *tx,
         crate::audit::AuditEntry {
@@ -506,14 +533,26 @@ pub async fn totp_confirm(
     user: &CurrentUser,
     code: &str,
 ) -> Result<Value, AppError> {
-    if !check_totp(state, user.account_id, &user.username, code).await? {
-        return Err(AppError::bad("totp_invalid", "验证码不正确"));
+    match check_totp(state, user.account_id, &user.username, code).await? {
+        TotpOutcome::Invalid => Err(AppError::bad("totp_invalid", "验证码不正确")),
+        TotpOutcome::Replayed => Err(AppError::bad("totp_reused", "验证码已使用过")),
+        TotpOutcome::Valid(step) => {
+            sqlx::query(
+                "UPDATE totp_credential SET confirmed = TRUE, last_used_step = $2 WHERE account_id = $1",
+            )
+            .bind(user.account_id)
+            .bind(step)
+            .execute(&state.pool)
+            .await?;
+            Ok(json!({"confirmed": true}))
+        }
     }
-    sqlx::query("UPDATE totp_credential SET confirmed = TRUE WHERE account_id = $1")
-        .bind(user.account_id)
-        .execute(&state.pool)
-        .await?;
-    Ok(json!({"confirmed": true}))
+}
+
+enum TotpOutcome {
+    Invalid,
+    Replayed,
+    Valid(i64),
 }
 
 async fn check_totp(
@@ -521,13 +560,15 @@ async fn check_totp(
     account_id: Uuid,
     username: &str,
     code: &str,
-) -> Result<bool, AppError> {
-    let row = sqlx::query("SELECT secret_ciphertext FROM totp_credential WHERE account_id = $1")
-        .bind(account_id)
-        .fetch_optional(&state.pool)
-        .await?;
+) -> Result<TotpOutcome, AppError> {
+    let row = sqlx::query(
+        "SELECT secret_ciphertext, last_used_step FROM totp_credential WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.pool)
+    .await?;
     let Some(row) = row else {
-        return Ok(false);
+        return Ok(TotpOutcome::Invalid);
     };
     let secret = decrypt(
         &state.config.local_key,
@@ -544,7 +585,15 @@ async fn check_totp(
     )
     .map_err(|_| AppError::internal())?;
     let now = state.clock.now().timestamp().max(0) as u64;
-    Ok(totp.check(code.trim(), now))
+    if !totp.check(code.trim(), now) {
+        return Ok(TotpOutcome::Invalid);
+    }
+    // 一次性：记下已用时间窗，同窗再验拒绝。
+    let step = (now / 30) as i64;
+    if row.get::<Option<i64>, _>("last_used_step") == Some(step) {
+        return Ok(TotpOutcome::Replayed);
+    }
+    Ok(TotpOutcome::Valid(step))
 }
 
 pub async fn login_totp(
@@ -578,10 +627,22 @@ pub async fn login_totp(
     }
     let account_id: Uuid = row.get("id");
     let username: String = row.get("username");
-    if !check_totp(state, account_id, &username, code).await? {
-        record_login(&state.pool, &username, ip, false, now).await?;
-        return Err(AppError::bad("totp_invalid", "验证码不正确"));
-    }
+    let step = match check_totp(state, account_id, &username, code).await? {
+        TotpOutcome::Invalid => {
+            record_login(&state.pool, &username, ip, false, now).await?;
+            return Err(AppError::bad("totp_invalid", "验证码不正确"));
+        }
+        TotpOutcome::Replayed => {
+            record_login(&state.pool, &username, ip, false, now).await?;
+            return Err(AppError::bad("totp_reused", "验证码已使用过"));
+        }
+        TotpOutcome::Valid(step) => step,
+    };
+    sqlx::query("UPDATE totp_credential SET last_used_step = $1 WHERE account_id = $2")
+        .bind(step)
+        .bind(account_id)
+        .execute(&state.pool)
+        .await?;
     record_login(&state.pool, &username, ip, true, now).await?;
     let issued = issue_session(&state.pool, now, account_id, user_agent, ip).await?;
     audit(
@@ -599,58 +660,114 @@ pub async fn login_totp(
     Ok(issued)
 }
 
-pub async fn request_magic_link(state: &AppState, username: &str) -> Result<Value, AppError> {
+pub async fn request_email_otp(state: &AppState, username: &str) -> Result<Value, AppError> {
     if !email_enabled(state).await? {
         return Err(AppError::bad("email_disabled", "邮箱能力已关闭"));
     }
+    let accepted = || Ok(json!({"accepted": true}));
     let row = sqlx::query("SELECT id, email FROM account WHERE username = $1")
         .bind(username)
         .fetch_optional(&state.pool)
         .await?;
     let Some(row) = row else {
-        return Ok(json!({"status": "accepted"}));
+        return accepted();
     };
+    let account_id: Uuid = row.get("id");
+    // 防枚举：不存在、未绑邮箱都与正常请求返回一致，且不发信。
     let Some(email) = row.get::<Option<String>, _>("email") else {
-        return Err(AppError::bad(
-            "email_not_bound",
-            "使用 magic link 前需要先绑定邮箱",
-        ));
+        return accepted();
     };
+    if email.trim().is_empty() {
+        return accepted();
+    }
     let now = state.clock.now();
-    let token = random_token();
+    let challenge = sqlx::query(
+        "SELECT last_sent_at, fail_count, locked_until FROM email_otp_challenge WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(item) = challenge.as_ref() {
+        if let Some(locked) = item.get::<Option<chrono::DateTime<Utc>>, _>("locked_until") {
+            if locked > now {
+                return Err(AppError::new(
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    "otp_locked",
+                    "验证码尝试过多，请稍后再试",
+                ));
+            }
+        }
+    }
+    if let Some(item) = challenge.as_ref() {
+        let last = item.get::<chrono::DateTime<Utc>, _>("last_sent_at");
+        if now.signed_duration_since(last).num_seconds() < EMAIL_OTP_RESEND_SECONDS {
+            return Err(AppError::new(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "otp_resend_too_soon",
+                "验证码发送太频繁，请稍后再试",
+            ));
+        }
+    }
+    // 每次 request 签发独立 secret（10 分钟窗），不是用户的认证器长期 secret。
+    let secret = random_bytes(20);
+    let step = now.timestamp().max(0) / EMAIL_OTP_STEP_SECONDS;
+    let totp = totp_rs::TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        EMAIL_OTP_STEP_SECONDS as u64,
+        secret.clone(),
+        Some("多邻灶".into()),
+        username.to_string(),
+    )
+    .map_err(|_| AppError::internal())?;
+    let code = totp.generate((step * EMAIL_OTP_STEP_SECONDS) as u64);
+    let packed = encrypt(&state.config.local_key, &secret)?;
+    // 失败计数跨 request 保留（只在成功时清零），否则重发即可绕开锁定。
     sqlx::query(
         r#"
-        INSERT INTO magic_link (account_id, token_hash, expires_at, created_at)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO email_otp_challenge (
+            account_id, secret_ciphertext, step, expires_at, last_sent_at, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $5)
+        ON CONFLICT (account_id) DO UPDATE SET
+            secret_ciphertext = EXCLUDED.secret_ciphertext,
+            step = EXCLUDED.step,
+            expires_at = EXCLUDED.expires_at,
+            last_sent_at = EXCLUDED.last_sent_at,
+            used_step = NULL
         "#,
     )
-    .bind(row.get::<Uuid, _>("id"))
-    .bind(sha256_hex(&token))
-    .bind(now + Duration::minutes(MAGIC_LINK_MINUTES))
+    .bind(account_id)
+    .bind(packed)
+    .bind(step)
+    .bind(now + Duration::minutes(EMAIL_OTP_MINUTES))
     .bind(now)
     .execute(&state.pool)
     .await?;
-    let link = format!("{}/login?magic={token}", state.config.webauthn_origin);
-    let body =
-        format!("多邻灶登录链接：{link}\ntoken={token}\n此链接 15 分钟内有效，且只能使用一次。");
+    let body = format!(
+        "多邻灶登录验证码：{code}\n10 分钟内有效，请勿转发。\n如果不是本人操作请忽略。"
+    );
     state
         .mailer
-        .send(&email, "多邻灶登录", &body)
+        .send(&email, "多邻灶登录验证码", &body)
         .await
         .map_err(|err| {
-            tracing::warn!(error = %err, "magic link mail failed");
+            tracing::warn!(error = %err, "email otp mail failed");
             AppError::new(
                 axum::http::StatusCode::BAD_GATEWAY,
                 "mail_failed",
                 "邮件发送失败",
             )
         })?;
-    Ok(json!({"status": "accepted"}))
+    accepted()
 }
 
-pub async fn consume_magic_link(
+/// 邮箱 OTP 校验：成功后持久化已用时间窗，同窗再验拒绝；顺手把邮箱标为已验证。
+pub async fn verify_email_otp(
     state: &AppState,
-    token: &str,
+    username: &str,
+    code: &str,
     user_agent: &str,
     ip: &str,
 ) -> Result<IssuedSession, AppError> {
@@ -658,33 +775,81 @@ pub async fn consume_magic_link(
         return Err(AppError::bad("email_disabled", "邮箱能力已关闭"));
     }
     let now = state.clock.now();
-    let mut tx = state.pool.begin().await?;
-    let row = sqlx::query(
-        r#"
-        SELECT m.id, m.account_id, a.username
-        FROM magic_link m
-        JOIN account a ON a.id = m.account_id
-        WHERE m.token_hash = $1 AND m.consumed_at IS NULL AND m.expires_at > $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(sha256_hex(token))
-    .bind(now)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| AppError::bad("magic_invalid", "链接无效或已使用"))?;
-    sqlx::query("UPDATE magic_link SET consumed_at = $1 WHERE id = $2")
-        .bind(now)
-        .bind(row.get::<Uuid, _>("id"))
-        .execute(&mut *tx)
+    // 与密码/TOTP 登录共用同一失败计数窗；失败也要落库，避免暴力枚举验证码。
+    check_login_rate(&state.pool, username, ip, now).await?;
+    let fail = async |username: &str, ip: &str| {
+        let _ = record_login(&state.pool, username, ip, false, state.clock.now()).await;
+    };
+    let invalid = || AppError::bad("otp_invalid", "验证码不正确");
+    let row = sqlx::query("SELECT id, username FROM account WHERE username = $1")
+        .bind(username)
+        .fetch_optional(&state.pool)
         .await?;
-    sqlx::query("UPDATE account SET email_verified = TRUE WHERE id = $1")
-        .bind(row.get::<Uuid, _>("account_id"))
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    let account_id: Uuid = row.get("account_id");
+    let Some(row) = row else {
+        fail(username, ip).await;
+        return Err(invalid());
+    };
+    let account_id: Uuid = row.get("id");
     let username: String = row.get("username");
+    let challenge =
+        sqlx::query("SELECT * FROM email_otp_challenge WHERE account_id = $1")
+            .bind(account_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(item) = challenge else {
+        fail(&username, ip).await;
+        return Err(invalid());
+    };
+    if let Some(locked) = item.get::<Option<chrono::DateTime<Utc>>, _>("locked_until") {
+        if locked > now {
+            fail(&username, ip).await;
+            return Err(AppError::new(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "otp_locked",
+                "验证码尝试过多，请稍后再试",
+            ));
+        }
+    }
+    let step: i64 = item.get("step");
+    // 一次性：同窗再验拒绝（成功即记 used_step，新 request 会清掉它）。
+    if item.get::<Option<i64>, _>("used_step") == Some(step) {
+        fail(&username, ip).await;
+        return Err(AppError::bad("otp_reused", "验证码已使用过"));
+    }
+    if item.get::<chrono::DateTime<Utc>, _>("expires_at") <= now {
+        bump_otp_failure(state, account_id, &username, ip, now).await?;
+        return Err(AppError::bad("otp_expired", "验证码已过期，请重新获取"));
+    }
+    let secret = decrypt(
+        &state.config.local_key,
+        &item.get::<Vec<u8>, _>("secret_ciphertext"),
+    )?;
+    let totp = totp_rs::TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        EMAIL_OTP_STEP_SECONDS as u64,
+        secret,
+        Some("多邻灶".into()),
+        username.clone(),
+    )
+    .map_err(|_| AppError::internal())?;
+    if totp.generate((step * EMAIL_OTP_STEP_SECONDS) as u64) != code.trim() {
+        bump_otp_failure(state, account_id, &username, ip, now).await?;
+        return Err(invalid());
+    }
+    sqlx::query(
+        "UPDATE email_otp_challenge SET used_step = $1, fail_count = 0 WHERE account_id = $2",
+    )
+    .bind(step)
+    .bind(account_id)
+    .execute(&state.pool)
+    .await?;
+    sqlx::query("UPDATE account SET email_verified = TRUE WHERE id = $1")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await?;
+    record_login(&state.pool, &username, ip, true, now).await?;
     let issued = issue_session(&state.pool, now, account_id, user_agent, ip).await?;
     audit(
         state,
@@ -694,11 +859,39 @@ pub async fn consume_magic_link(
         "login",
         Some("session"),
         Some(issued.session_id.to_string()),
-        json!({"method": "magic_link"}),
+        json!({"method": "email_otp"}),
         "ok",
     )
     .await?;
     Ok(issued)
+}
+
+/// 邮箱 OTP 失败计数：连续 5 次失败锁定该账号 15 分钟；同时记登录失败窗。
+async fn bump_otp_failure(
+    state: &AppState,
+    account_id: Uuid,
+    username: &str,
+    ip: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<(), AppError> {
+    record_login(&state.pool, username, ip, false, now).await?;
+    sqlx::query(
+        r#"
+        UPDATE email_otp_challenge
+        SET fail_count = fail_count + 1,
+            locked_until = CASE
+                WHEN fail_count + 1 >= $2 THEN $3
+                ELSE locked_until
+            END
+        WHERE account_id = $1
+        "#,
+    )
+    .bind(account_id)
+    .bind(EMAIL_OTP_MAX_FAILURES as i32)
+    .bind(now + Duration::minutes(EMAIL_OTP_LOCK_MINUTES))
+    .execute(&state.pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn passkey_register_start(
@@ -1334,7 +1527,7 @@ pub async fn logout(state: &AppState, user: &CurrentUser) -> Result<Value, AppEr
     Ok(json!({"revoked": true}))
 }
 
-/// 总管找回后吊销该账号全部会话（含当前），并作废未消费的 magic link。
+/// 总管找回后吊销该账号全部会话（含当前），并作废未消费的邮箱 OTP。
 pub async fn revoke_all_sessions(
     pool: &sqlx::PgPool,
     account_id: Uuid,
@@ -1352,5 +1545,9 @@ pub async fn revoke_all_sessions(
     .bind(account_id)
     .execute(pool)
     .await?;
+    sqlx::query("DELETE FROM email_otp_challenge WHERE account_id = $1")
+        .bind(account_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

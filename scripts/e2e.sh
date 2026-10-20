@@ -45,8 +45,8 @@ set("super_admin", "username", '"root"');
 set("super_admin", "password", '"root-password-1"');
 set("webauthn", "rp_id", '"localhost"');
 set("webauthn", "rp_origin", `"${process.env.DLZ_RP_ORIGIN}"`);
-// e2e 假 SMTP：只为让「邮箱开关」场景能开启能力并看到 magic link，不真实发信。
-// 步骤里从不调用 magic-link/request，所以不会连 smtp.example.invalid。
+// e2e 假 SMTP：只为让「邮箱开关」场景能开启能力并看到邮箱验证码，不真实发信。
+// 步骤里从不调用 email-otp/request，所以不会连 smtp.example.invalid。
 set("smtp", "host", '"smtp.example.invalid"');
 set("smtp", "from", '"e2e@example.invalid"');
 set("schedule", "lock_time", '"09:00"');
