@@ -28,6 +28,7 @@ import {
 const { Given, When, Then } = createBdd(test);
 
 let adminInvite = "";
+let adminInviteId = "";
 let regUser = "";
 let changeUser = "";
 let changeDate = "";
@@ -112,23 +113,35 @@ Then("邀请本身不按食堂拆开", async ({ page }) => {
   expect(body).not.toMatch(/按食堂|选择食堂|食堂范围/);
 });
 
-// 场景：员工凭该邀请码可注册
-Given("管理员刚生成一张未使用邀请码", async () => {
-  const a = await loginSession(adminUser, adminPass);
-  const r = await a.call("/api/admin/invites", { method: "POST" });
-  expect(r.status).toBe(201);
-  adminInvite = r.json.code;
-});
-
-When("新用户使用该邀请码完成注册", async ({ page }) => {
-  regUser = uniqueTag("adm_");
+// 场景：邀请码用满次数后不能再注册 / 改小次数立即用尽并可作废
+async function registerWithInvite(page: any, username: string) {
   await page.context().clearCookies();
   await page.goto("/");
   await page.getByRole("button", { name: "有邀请码，去注册" }).click();
-  await page.getByPlaceholder("账号").fill(regUser);
+  await page.getByPlaceholder("账号").fill(username);
   await page.getByPlaceholder("邀请码").fill(adminInvite);
   await page.getByPlaceholder("密码（至少 8 位）").fill("E2e-adm-reg1!");
   await page.getByRole("button", { name: "注册并登录" }).click();
+}
+
+async function inviteRow() {
+  const a = await loginSession(adminUser, adminPass);
+  const r = await a.call("/api/admin/invites");
+  return (r.json.items ?? []).find((x: any) => x.id === adminInviteId);
+}
+
+Given("管理员生成一张可用{int}次的邀请码", async ({ }, n: number) => {
+  const a = await loginSession(adminUser, adminPass);
+  const r = await a.call("/api/admin/invites", { method: "POST", body: { max_uses: n } });
+  expect(r.status).toBe(201);
+  expect(r.json.max_uses).toBe(n);
+  adminInvite = r.json.code;
+  adminInviteId = r.json.id;
+});
+
+When("第{int}位新用户使用该邀请码完成注册", async ({ page }, _n: number) => {
+  regUser = uniqueTag("adm_");
+  await registerWithInvite(page, regUser);
   await expect(page.locator(".emp")).toBeVisible({ timeout: 10000 });
 });
 
@@ -136,21 +149,38 @@ Then("注册成功", async ({ page }) => {
   await expect(page.locator(".emp")).toBeVisible();
 });
 
-Then("该邀请码标记为已使用", async () => {
-  const a = await loginSession(adminUser, adminPass);
-  const r = await a.call("/api/admin/invites");
-  const row = (r.json.items ?? []).find((x: any) => x.used_by === regUser);
-  expect(row?.used_at).toBeTruthy();
+Then("该邀请码已用完", async () => {
+  const row = await inviteRow();
+  expect(row?.used_count).toBe(row?.max_uses);
 });
 
-When("再次使用同一邀请码注册", async ({ page }) => {
-  await page.context().clearCookies();
-  await page.goto("/");
-  await page.getByRole("button", { name: "有邀请码，去注册" }).click();
-  await page.getByPlaceholder("账号").fill(`${regUser}x`);
-  await page.getByPlaceholder("邀请码").fill(adminInvite);
-  await page.getByPlaceholder("密码（至少 8 位）").fill("E2e-adm-reg1!");
-  await page.getByRole("button", { name: "注册并登录" }).click();
+When("用满次数后再次使用该邀请码注册", async ({ page }) => {
+  await registerWithInvite(page, `${regUser}x`);
+});
+
+When("将该邀请码可用次数改为{int}", async ({ }, n: number) => {
+  const a = await loginSession(adminUser, adminPass);
+  const r = await a.call(`/api/admin/invites/${adminInviteId}`, {
+    method: "PATCH",
+    body: { max_uses: n },
+  });
+  expect(r.status).toBe(200);
+  expect(r.json.max_uses).toBe(n);
+});
+
+When("作废该邀请码", async () => {
+  const a = await loginSession(adminUser, adminPass);
+  const r = await a.call(`/api/admin/invites/${adminInviteId}`, { method: "DELETE" });
+  expect(r.status).toBe(200);
+});
+
+Then("列表中该邀请码显示已作废", async () => {
+  const row = await inviteRow();
+  expect(row?.revoked_at).toBeTruthy();
+});
+
+When("使用已作废的邀请码注册", async ({ page }) => {
+  await registerWithInvite(page, uniqueTag("adm_"));
 });
 
 Then("注册失败", async ({ page }) => {

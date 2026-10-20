@@ -140,20 +140,29 @@ pub async fn assign_role(
     Ok(json!({"account_id": account_id, "role": role, "canteen_ids": canteen_ids}))
 }
 
-pub async fn create_invite(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
+pub async fn create_invite(
+    state: &AppState,
+    user: &CurrentUser,
+    max_uses: Option<i32>,
+) -> Result<Value, AppError> {
     let hit = authorize(&user.assignments, Perm::UserInvite, None)?;
+    let max_uses = max_uses.unwrap_or(1);
+    if max_uses < 1 {
+        return Err(AppError::bad("max_uses_invalid", "可使用次数至少为 1"));
+    }
     let code = random_token();
     let now = state.clock.now();
     let id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO invite_code (code_hash, created_by, created_at)
-        VALUES ($1, $2, $3)
+        INSERT INTO invite_code (code_hash, created_by, created_at, max_uses)
+        VALUES ($1, $2, $3, $4)
         RETURNING id
         "#,
     )
     .bind(sha256_hex(&code))
     .bind(user.account_id)
     .bind(now)
+    .bind(max_uses)
     .fetch_one(&state.pool)
     .await?;
     audit_user(
@@ -163,17 +172,103 @@ pub async fn create_invite(state: &AppState, user: &CurrentUser) -> Result<Value
         "invite_create",
         Some("invite"),
         Some(id.to_string()),
+        json!({"max_uses": max_uses}),
+    )
+    .await?;
+    Ok(json!({"id": id, "code": code, "created_at": now, "max_uses": max_uses}))
+}
+
+pub async fn update_invite_max_uses(
+    state: &AppState,
+    user: &CurrentUser,
+    id: Uuid,
+    max_uses: i32,
+) -> Result<Value, AppError> {
+    let hit = authorize(&user.assignments, Perm::UserInvite, None)?;
+    if max_uses < 1 {
+        return Err(AppError::bad("max_uses_invalid", "可使用次数至少为 1"));
+    }
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query("SELECT used_count FROM invite_code WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::not_found("invite_not_found"))?;
+    let used_count: i32 = row.get("used_count");
+    // 改小到等于 used_count 即立即用尽；小于 used_count 不允许。
+    if max_uses < used_count {
+        return Err(AppError::bad(
+            "max_uses_invalid",
+            "可使用次数不能小于已使用次数",
+        ));
+    }
+    sqlx::query("UPDATE invite_code SET max_uses = $1 WHERE id = $2")
+        .bind(max_uses)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    crate::audit::write_audit(
+        &mut *tx,
+        crate::audit::AuditEntry {
+            at: state.clock.now(),
+            actor_id: Some(user.account_id),
+            actor_username: Some(user.username.clone()),
+            role: Some(hit.role.clone()),
+            scope: hit.scope.clone(),
+            action: "invite_update".into(),
+            object_type: Some("invite".into()),
+            object_id: Some(id.to_string()),
+            summary: json!({"max_uses": max_uses}),
+            result: "ok".into(),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"id": id, "max_uses": max_uses, "used_count": used_count}))
+}
+
+pub async fn revoke_invite(
+    state: &AppState,
+    user: &CurrentUser,
+    id: Uuid,
+) -> Result<Value, AppError> {
+    let hit = authorize(&user.assignments, Perm::UserInvite, None)?;
+    let now = state.clock.now();
+    let updated =
+        sqlx::query("UPDATE invite_code SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL")
+            .bind(now)
+            .bind(id)
+            .execute(&state.pool)
+            .await?;
+    if updated.rows_affected() == 0 {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM invite_code WHERE id = $1)")
+                .bind(id)
+                .fetch_one(&state.pool)
+                .await?;
+        if !exists {
+            return Err(AppError::not_found("invite_not_found"));
+        }
+    }
+    audit_user(
+        state,
+        user,
+        &hit,
+        "invite_revoke",
+        Some("invite"),
+        Some(id.to_string()),
         json!({}),
     )
     .await?;
-    Ok(json!({"id": id, "code": code, "created_at": now}))
+    Ok(json!({"id": id, "revoked": true}))
 }
 
 pub async fn list_invites(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
     let _ = authorize(&user.assignments, Perm::UserInvite, None)?;
     let rows = sqlx::query(
         r#"
-        SELECT i.id, i.created_at, i.used_at, a.username AS used_by
+        SELECT i.id, i.created_at, i.used_at, i.max_uses, i.used_count, i.revoked_at,
+               a.username AS used_by
         FROM invite_code i
         LEFT JOIN account a ON a.id = i.used_by
         ORDER BY i.created_at DESC
@@ -187,6 +282,9 @@ pub async fn list_invites(state: &AppState, user: &CurrentUser) -> Result<Value,
             "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
             "used_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("used_at"),
             "used_by": row.get::<Option<String>, _>("used_by"),
+            "max_uses": row.get::<i32, _>("max_uses"),
+            "used_count": row.get::<i32, _>("used_count"),
+            "revoked_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("revoked_at"),
         })).collect::<Vec<_>>()
     }))
 }

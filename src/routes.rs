@@ -2,7 +2,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use tower_http::set_header::SetResponseHeaderLayer;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
@@ -112,6 +112,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/canteens", post(create_canteen))
         .route("/api/admin/role-assignments", post(assign_role))
         .route("/api/admin/invites", post(create_invite).get(list_invites))
+        .route(
+            "/api/admin/invites/:id",
+            patch(update_invite).delete(revoke_invite),
+        )
         .route("/api/admin/meals", get(admin_meals))
         .route(
             "/api/admin/meals/:account_id/:date/:slot",
@@ -986,12 +990,42 @@ async fn assign_role(
     ))
 }
 
+#[derive(Deserialize, Default)]
+struct InviteBody {
+    #[serde(default)]
+    max_uses: Option<i32>,
+}
+
 async fn create_invite(
     State(state): State<AppState>,
     user: CurrentUser,
+    body: Option<Json<InviteBody>>,
 ) -> Result<impl IntoResponse, AppError> {
-    let created = admin::create_invite(&state, &user).await?;
+    let max_uses = body.map(|item| item.max_uses).unwrap_or(None);
+    let created = admin::create_invite(&state, &user, max_uses).await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn update_invite(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<InviteBody>,
+) -> Result<Json<Value>, AppError> {
+    let max_uses = body
+        .max_uses
+        .ok_or_else(|| AppError::bad("max_uses_invalid", "可使用次数至少为 1"))?;
+    Ok(Json(
+        admin::update_invite_max_uses(&state, &user, id, max_uses).await?,
+    ))
+}
+
+async fn revoke_invite(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(admin::revoke_invite(&state, &user, id).await?))
 }
 
 async fn list_invites(

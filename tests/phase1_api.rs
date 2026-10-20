@@ -2363,3 +2363,240 @@ async fn security_hardening_round2() {
         "审计不能记 key 明文: {entry}"
     );
 }
+
+#[tokio::test]
+async fn invite_multi_use() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    let super_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("invite-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login",
+    )
+    .token();
+
+    // 默认一次性：不传 max_uses 即 max_uses=1。
+    let once = must(
+        api.call(
+            "POST",
+            "/api/admin/invites",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "invite default",
+    )
+    .json();
+    assert_eq!(once["max_uses"], 1);
+    let bad_max = api
+        .call(
+            "POST",
+            "/api/admin/invites",
+            Some(&super_token),
+            Some(json!({"max_uses": 0})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(bad_max.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad_max.json()["error"], "max_uses_invalid");
+
+    // 可用 2 次：两次注册成功，第三次失败。
+    let shared = must(
+        api.call(
+            "POST",
+            "/api/admin/invites",
+            Some(&super_token),
+            Some(json!({"max_uses": 2})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "invite max_uses=2",
+    )
+    .json();
+    let code = shared["code"].as_str().unwrap().to_string();
+    let id = shared["id"].as_str().unwrap().to_string();
+    for name in ["multi-a", "multi-b"] {
+        must(
+            api.call(
+                "POST",
+                "/api/register",
+                None,
+                Some(json!({"username": name, "invite_code": code, "password": "password-1"})),
+                None,
+                None,
+            )
+            .await,
+            StatusCode::CREATED,
+            "register with shared invite",
+        );
+    }
+    let full = api
+        .call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "multi-c", "invite_code": code, "password": "password-1"})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(full.status, StatusCode::BAD_REQUEST);
+    assert_eq!(full.json()["error"], "invite_invalid");
+
+    // 列表：已用/上限与明文不泄露。
+    let listed = must(
+        api.call(
+            "GET",
+            "/api/admin/invites",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "invite list",
+    )
+    .json();
+    assert!(!listed.to_string().contains(&code), "列表不能出现明文码");
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id)
+        .expect("应有新建邀请码");
+    assert_eq!(row["max_uses"], 2);
+    assert_eq!(row["used_count"], 2);
+    assert!(row.get("code").is_none());
+
+    // 改次数不得小于已用次数；改大后可继续注册。
+    let shrink = api
+        .call(
+            "PATCH",
+            &format!("/api/admin/invites/{id}"),
+            Some(&super_token),
+            Some(json!({"max_uses": 1})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(shrink.status, StatusCode::BAD_REQUEST);
+    assert_eq!(shrink.json()["error"], "max_uses_invalid");
+    must(
+        api.call(
+            "PATCH",
+            &format!("/api/admin/invites/{id}"),
+            Some(&super_token),
+            Some(json!({"max_uses": 3})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "raise max_uses",
+    );
+    must(
+        api.call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "multi-c", "invite_code": code, "password": "password-1"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "register after raise",
+    );
+
+    // 改小到等于 used_count 即立即用尽。
+    must(
+        api.call(
+            "PATCH",
+            &format!("/api/admin/invites/{id}"),
+            Some(&super_token),
+            Some(json!({"max_uses": 3})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "shrink to used_count",
+    );
+    let exhausted = api
+        .call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "multi-d", "invite_code": code, "password": "password-1"})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(exhausted.status, StatusCode::BAD_REQUEST);
+
+    // 作废后不能再注册，列表标已作废。
+    must(
+        api.call(
+            "DELETE",
+            &format!("/api/admin/invites/{id}"),
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "revoke",
+    );
+    let revoked = api
+        .call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "multi-e", "invite_code": code, "password": "password-1"})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::BAD_REQUEST);
+    assert_eq!(revoked.json()["error"], "invite_invalid");
+    let listed = must(
+        api.call(
+            "GET",
+            "/api/admin/invites",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "invite list after revoke",
+    )
+    .json();
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id)
+        .expect("应有新建邀请码");
+    assert!(
+        row["revoked_at"].is_string(),
+        "作废后列表应标 revoked_at: {row}"
+    );
+}

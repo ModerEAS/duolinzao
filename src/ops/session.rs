@@ -132,8 +132,8 @@ pub async fn register(
     let mut tx = state.pool.begin().await?;
     let invite = sqlx::query(
         r#"
-        SELECT id FROM invite_code
-        WHERE code_hash = $1 AND used_at IS NULL
+        SELECT id, max_uses, used_count, revoked_at FROM invite_code
+        WHERE code_hash = $1
         FOR UPDATE
         "#,
     )
@@ -141,6 +141,15 @@ pub async fn register(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::bad("invite_invalid", "邀请码无效"))?;
+    if invite
+        .get::<Option<chrono::DateTime<chrono::Utc>>, _>("revoked_at")
+        .is_some()
+    {
+        return Err(AppError::bad("invite_invalid", "邀请码已作废"));
+    }
+    if invite.get::<i32, _>("used_count") >= invite.get::<i32, _>("max_uses") {
+        return Err(AppError::bad("invite_invalid", "邀请码已用完"));
+    }
     let taken: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM account WHERE username = $1)")
             .bind(&username)
@@ -172,12 +181,15 @@ pub async fn register(
     .bind(now)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE invite_code SET used_by = $1, used_at = $2 WHERE id = $3")
-        .bind(account_id)
-        .bind(now)
-        .bind(invite.get::<Uuid, _>("id"))
-        .execute(&mut *tx)
-        .await?;
+    // used_by/used_at 只保留末次使用；次数以 used_count 为准。
+    sqlx::query(
+        "UPDATE invite_code SET used_by = $1, used_at = $2, used_count = used_count + 1 WHERE id = $3",
+    )
+    .bind(account_id)
+    .bind(now)
+    .bind(invite.get::<Uuid, _>("id"))
+    .execute(&mut *tx)
+    .await?;
     crate::audit::write_audit(
         &mut *tx,
         crate::audit::AuditEntry {
