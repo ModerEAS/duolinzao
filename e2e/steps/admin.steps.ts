@@ -99,9 +99,10 @@ Then("进入邀请码展示状态并完整显示这一次的码", async ({ page 
 
 // （When「离开该展示状态后再看列表」在 super.steps.ts 已定义，复用。）
 
-Then("列表只保留是否已使用与发放时间", async ({ page }) => {
+Then("列表显示已用次数、状态与发放时间", async ({ page }) => {
   await expect(page.getByText("发放时间").first()).toBeVisible();
-  await expect(page.getByText("是否已用").first()).toBeVisible();
+  await expect(page.getByText("已用/上限").first()).toBeVisible();
+  await expect(page.locator("th", { hasText: "状态" }).first()).toBeVisible();
 });
 
 Then("不再显示码原文", async ({ page }) => {
