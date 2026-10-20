@@ -12,14 +12,15 @@ const methods = ref<string[]>(["passkey", "totp", "password"]);
 const emailEnabled = ref(false);
 const showPwd = ref(false);
 const showTotp = ref(false);
-const showMagic = ref(false);
+const showEmailOtp = ref(false);
 const showWait = ref(false);
 const showRegister = ref(false);
 const username = ref("");
 const password = ref("");
 const totpUser = ref("");
 const totpCode = ref("");
-const magicUser = ref("");
+const otpUser = ref("");
+const otpCode = ref("");
 const regUser = ref("");
 const regCode = ref("");
 const regPassword = ref("");
@@ -34,19 +35,7 @@ onMounted(async () => {
   } catch {
     /* 保持默认顺序 */
   }
-  const magic = new URLSearchParams(location.search).get("magic");
-  if (magic) {
-    try {
-      await api("/api/session/magic-link/consume", {
-        method: "POST",
-        body: JSON.stringify({ token: magic }),
-      });
-      await refreshSession();
-      emit("enter");
-    } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : "链接无效");
-    }
-  }
+  // 邮箱登录只有验证码一种方式，不再提供 magic link。
 });
 
 async function enter() {
@@ -78,15 +67,27 @@ async function totpLogin() {
   }
 }
 
-async function requestMagic() {
+async function requestEmailOtp() {
   try {
-    await api("/api/session/magic-link/request", {
+    await api("/api/session/email-otp/request", {
       method: "POST",
-      body: JSON.stringify({ username: magicUser.value }),
+      body: JSON.stringify({ username: otpUser.value }),
     });
-    ElMessage.success("如果账号已绑定邮箱，登录链接已发出");
+    ElMessage.success("如果账号已绑定邮箱，验证码已发出");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "无法发送");
+  }
+}
+
+async function verifyEmailOtp() {
+  try {
+    await api("/api/session/email-otp/verify", {
+      method: "POST",
+      body: JSON.stringify({ username: otpUser.value, code: otpCode.value }),
+    });
+    await enter();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "验证码不正确");
   }
 }
 
@@ -170,6 +171,7 @@ function bufferToBase64url(buffer: ArrayBuffer): string {
 
 async function register() {
   try {
+    // 注册成功即登录：服务端直接下发会话 cookie，刷新会话即可进入。
     await api("/api/register", {
       method: "POST",
       body: JSON.stringify({
@@ -178,9 +180,7 @@ async function register() {
         password: regPassword.value,
       }),
     });
-    username.value = regUser.value;
-    password.value = regPassword.value;
-    await passwordLogin();
+    await enter();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "注册失败");
   }
@@ -262,17 +262,19 @@ async function poll() {
           <el-input v-model="totpCode" placeholder="6 位验证码" class="mb" />
           <el-button type="primary" class="full" @click="totpLogin">验证并登录</el-button>
         </div>
-        <template v-if="emailEnabled && methods.includes('magic_link')">
-          <el-button size="large" class="full outline" @click="showMagic = !showMagic">
+        <template v-if="emailEnabled && methods.includes('email_otp')">
+          <el-button size="large" class="full outline" @click="showEmailOtp = !showEmailOtp">
             <el-icon><Message /></el-icon>
-            邮箱 magic link
+            邮箱验证码
           </el-button>
-          <div v-if="showMagic" class="pwd-box">
-            <el-input v-model="magicUser" placeholder="账号" class="mb" />
-            <el-button class="full" @click="requestMagic">发送登录链接</el-button>
+          <div v-if="showEmailOtp" class="pwd-box">
+            <el-input v-model="otpUser" placeholder="账号" class="mb" />
+            <el-button class="full" @click="requestEmailOtp">发送验证码</el-button>
+            <el-input v-model="otpCode" placeholder="6 位验证码" class="mb" />
+            <el-button type="primary" class="full" @click="verifyEmailOtp">验证并登录</el-button>
           </div>
         </template>
-        <p v-else class="hint">邮箱能力关闭，不显示 magic link</p>
+        <p v-else class="hint">邮箱能力关闭，不显示邮箱验证码</p>
 
         <button type="button" class="pwd-toggle" @click="showPwd = !showPwd">
           <span><el-icon><Lock /></el-icon> 密码登录（兜底）</span>

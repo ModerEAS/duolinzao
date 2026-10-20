@@ -150,6 +150,14 @@ fn must(res: Resp, status: StatusCode, label: &str) -> Resp {
     res
 }
 
+/// 从邮箱正文里抠 6 位验证码（正文不含链接，只有「10 分钟」这类短数字）。
+fn otp_code(body: &str) -> String {
+    body.split(|item: char| !item.is_ascii_digit())
+        .find(|part| part.len() == 6)
+        .expect("邮件正文应含 6 位验证码")
+        .to_string()
+}
+
 fn uid(value: &Value, key: &str) -> Uuid {
     Uuid::parse_str(
         value[key]
@@ -225,35 +233,30 @@ async fn register_user(api: &Api, super_token: &str, username: &str) -> (String,
         "邀请码列表不能再次出现明文"
     );
     assert!(listed["items"][0].get("code").is_none());
-    let account = must(
+    let ua = format!("ua-{username}");
+    // 注册成功即登录：响应直接带会话 cookie，不用再登一次。
+    let registered = must(
         api.call(
             "POST",
             "/api/register",
             None,
             Some(json!({"username": username, "invite_code": code, "password": "password-1"})),
-            None,
+            Some(ua.as_str()),
             None,
         )
         .await,
         StatusCode::CREATED,
         "register",
-    )
-    .json();
-    let ua = format!("ua-{username}");
-    let token = must(
-        api.call(
-            "POST",
-            "/api/session/password",
-            None,
-            Some(json!({"username": username, "password": "password-1"})),
-            Some(ua.as_str()),
-            None,
-        )
-        .await,
+    );
+    assert_eq!(registered.json()["ok"], true, "register body");
+    let token = registered.token();
+    let account = registered.json();
+    must(
+        api.call("GET", "/api/me", Some(&token), None, None, None)
+            .await,
         StatusCode::OK,
-        "login new user",
-    )
-    .token();
+        "register session",
+    );
     (token, uid(&account, "account_id"))
 }
 
@@ -293,7 +296,7 @@ async fn prepare() -> Api {
         r#"
         TRUNCATE TABLE
             account, invite_code, canteen, role_assignment, canteen_member, canteen_staff,
-            device, session, passkey, totp_credential, magic_link, login_approval, login_attempt,
+            device, session, passkey, totp_credential, email_otp_challenge, magic_link, login_approval, login_attempt,
             shift_plan, meal_template, meal_day_lock, meal_order, dish, menu_pick, score,
             comment, preference, notification, llm_channel, audit_log, app_setting
         RESTART IDENTITY CASCADE
@@ -359,10 +362,10 @@ async fn phase1_acceptance() {
     assert_eq!(methods["methods"], json!(["passkey", "totp", "password"]));
     assert_eq!(methods["email_enabled"], false);
 
-    let magic_off = must(
+    let otp_off = must(
         api.call(
             "POST",
-            "/api/session/magic-link/request",
+            "/api/session/email-otp/request",
             None,
             Some(json!({"username": "root"})),
             None,
@@ -370,9 +373,9 @@ async fn phase1_acceptance() {
         )
         .await,
         StatusCode::BAD_REQUEST,
-        "magic off",
+        "otp off",
     );
-    assert_eq!(magic_off.json()["error"], "email_disabled");
+    assert_eq!(otp_off.json()["error"], "email_disabled");
 
     let push = must(
         api.call(
@@ -1641,7 +1644,7 @@ async fn phase1_acceptance() {
     .json();
     assert_eq!(
         methods["methods"],
-        json!(["passkey", "totp", "magic_link", "password"])
+        json!(["passkey", "totp", "email_otp", "password"])
     );
     must(
         api.call(
@@ -1656,10 +1659,32 @@ async fn phase1_acceptance() {
         StatusCode::OK,
         "bind email",
     );
-    must(
+    // 邮箱 OTP：request 防枚举一律 accepted；未知账号不发信。
+    let mails_before = api.mailer.messages.lock().unwrap().len();
+    let ghost = must(
         api.call(
             "POST",
-            "/api/session/magic-link/request",
+            "/api/session/email-otp/request",
+            None,
+            Some(json!({"username": "ghost-nobody"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "otp request unknown",
+    )
+    .json();
+    assert_eq!(ghost["accepted"], true);
+    assert_eq!(
+        api.mailer.messages.lock().unwrap().len(),
+        mails_before,
+        "未知账号不发信"
+    );
+    let accepted = must(
+        api.call(
+            "POST",
+            "/api/session/email-otp/request",
             None,
             Some(json!({"username": "emp-a"})),
             None,
@@ -1667,57 +1692,143 @@ async fn phase1_acceptance() {
         )
         .await,
         StatusCode::OK,
-        "magic request",
-    );
+        "otp request",
+    )
+    .json();
+    assert_eq!(accepted["accepted"], true);
     let mail = api.mailer.messages.lock().unwrap().clone();
-    assert_eq!(mail.len(), 1);
-    let token = mail[0]
-        .2
-        .split("token=")
-        .nth(1)
-        .unwrap()
-        .split('\n')
-        .next()
-        .unwrap();
-    let magic_token = must(
+    assert_eq!(mail.len(), mails_before + 1);
+    assert!(
+        !mail[mails_before].2.contains("http"),
+        "邮箱 OTP 正文不含登录链接"
+    );
+    let code = otp_code(&mail[mails_before].2);
+    // 未到 60 秒重发拒绝。
+    let soon = api
+        .call(
+            "POST",
+            "/api/session/email-otp/request",
+            None,
+            Some(json!({"username": "emp-a"})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(soon.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(soon.json()["error"], "otp_resend_too_soon");
+    let otp_token = must(
         api.call(
             "POST",
-            "/api/session/magic-link/consume",
+            "/api/session/email-otp/verify",
             None,
-            Some(json!({"token": token})),
-            Some("magic-ua"),
+            Some(json!({"username": "emp-a", "code": code.clone()})),
+            Some("otp-ua"),
             None,
         )
         .await,
         StatusCode::OK,
-        "magic consume",
+        "otp verify",
     )
     .token();
     must(
-        api.call("GET", "/api/me", Some(&magic_token), None, None, None)
+        api.call("GET", "/api/me", Some(&otp_token), None, None, None)
             .await,
         StatusCode::OK,
-        "magic session",
+        "otp session",
     );
     must(
         api.call("GET", "/api/me", Some(&emp1), None, None, None)
             .await,
         StatusCode::OK,
-        "old session after magic",
+        "old session after otp",
     );
+    // 一次性：同一码再验拒绝。
+    let reused = api
+        .call(
+            "POST",
+            "/api/session/email-otp/verify",
+            None,
+            Some(json!({"username": "emp-a", "code": code})),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(reused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(reused.json()["error"], "otp_reused");
+    // 旧 magic-link 路由已移除，不可用。
+    for dead in [
+        "/api/session/magic-link/request",
+        "/api/session/magic-link/consume",
+    ] {
+        let res = api
+            .call(
+                "POST",
+                dead,
+                None,
+                Some(json!({"token": "x"})),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{dead} 应不可用");
+    }
+    // 失败锁定：连续 5 次验错锁 15 分钟，正确码也拒绝（独立账号/IP，避开共用计数窗）。
+    let lock_ip: SocketAddr = "198.51.100.9:443".parse().unwrap();
+    let (otp_user, _) = register_user(&api, &super_token, "emp-otp").await;
     must(
         api.call(
-            "POST",
-            "/api/session/magic-link/consume",
-            None,
-            Some(json!({"token": token})),
+            "PUT",
+            "/api/me/email",
+            Some(&otp_user),
+            Some(json!({"email": "emp-otp@example.com"})),
             None,
             None,
         )
         .await,
-        StatusCode::BAD_REQUEST,
-        "magic one time",
+        StatusCode::OK,
+        "bind otp email",
     );
+    must(
+        api.call(
+            "POST",
+            "/api/session/email-otp/request",
+            None,
+            Some(json!({"username": "emp-otp"})),
+            None,
+            Some(lock_ip),
+        )
+        .await,
+        StatusCode::OK,
+        "otp request for lock",
+    );
+    let mail = api.mailer.messages.lock().unwrap().clone();
+    let good = otp_code(&mail.last().unwrap().2);
+    for round in 0..5 {
+        let bad = api
+            .call(
+                "POST",
+                "/api/session/email-otp/verify",
+                None,
+                Some(json!({"username": "emp-otp", "code": "000000"})),
+                None,
+                Some(lock_ip),
+            )
+            .await;
+        assert_eq!(bad.status, StatusCode::BAD_REQUEST, "第 {round} 次验错");
+        assert_eq!(bad.json()["error"], "otp_invalid");
+    }
+    let locked = api
+        .call(
+            "POST",
+            "/api/session/email-otp/verify",
+            None,
+            Some(json!({"username": "emp-otp", "code": good})),
+            None,
+            Some(lock_ip),
+        )
+        .await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(locked.json()["error"], "otp_locked");
 
     let setup = must(
         api.call("POST", "/api/me/totp/setup", Some(&emp2), None, None, None)
@@ -1758,6 +1869,25 @@ async fn phase1_acceptance() {
         StatusCode::OK,
         "totp confirm",
     );
+    // 认证器 TOTP 防重放：确认用过的码在同一时间窗内登录拒绝。
+    let replay = api
+        .call(
+            "POST",
+            "/api/session/totp",
+            None,
+            Some(json!({"username": "emp-b", "code": code.clone()})),
+            Some("totp-ua"),
+            None,
+        )
+        .await;
+    assert_eq!(replay.status, StatusCode::BAD_REQUEST);
+    assert_eq!(replay.json()["error"], "totp_reused");
+    // 把已用窗拨旧后，同一码可登录（证明拦的是重放，不是码本身）。
+    sqlx::query("UPDATE totp_credential SET last_used_step = last_used_step - 2 WHERE account_id = $1")
+        .bind(emp2_id)
+        .execute(&api.pool)
+        .await
+        .unwrap();
     let totp_token = must(
         api.call(
             "POST",
@@ -1983,6 +2113,7 @@ async fn phase1_acceptance() {
         .expect("注册审计");
     assert_eq!(registered["role"], "employee");
     assert_eq!(registered["scope"], "self");
+    assert_eq!(registered["summary"]["auto_login"], true);
     assert!(registered["actor_id"].is_string());
     let young_id = Uuid::parse_str(registered["id"].as_str().unwrap()).unwrap();
     let deleted = sqlx::query("DELETE FROM audit_log WHERE id = $1")
@@ -3166,7 +3297,7 @@ async fn account_settings() {
     must(
         api.call(
             "POST",
-            "/api/session/magic-link/request",
+            "/api/session/email-otp/request",
             None,
             Some(json!({"username": "acct-a"})),
             None,
@@ -3174,20 +3305,10 @@ async fn account_settings() {
         )
         .await,
         StatusCode::OK,
-        "magic before password change",
+        "otp before password change",
     );
     let mail = api.mailer.messages.lock().unwrap().clone();
-    let token = mail
-        .last()
-        .unwrap()
-        .2
-        .split("token=")
-        .nth(1)
-        .unwrap()
-        .split('\n')
-        .next()
-        .unwrap()
-        .to_string();
+    let pending_code = otp_code(&mail.last().unwrap().2);
     must(
         api.call(
             "POST",
@@ -3201,19 +3322,18 @@ async fn account_settings() {
         StatusCode::OK,
         "change password again",
     );
-    must(
-        api.call(
+    let voided = api
+        .call(
             "POST",
-            "/api/session/magic-link/consume",
+            "/api/session/email-otp/verify",
             None,
-            Some(json!({"token": token})),
+            Some(json!({"username": "acct-a", "code": pending_code})),
             None,
             None,
         )
-        .await,
-        StatusCode::BAD_REQUEST,
-        "unused magic link consumed by password change",
-    );
+        .await;
+    assert_eq!(voided.status, StatusCode::BAD_REQUEST);
+    assert_eq!(voided.json()["error"], "otp_invalid");
     must(
         api.call("GET", "/api/me", Some(&token_a), None, None, None)
             .await,

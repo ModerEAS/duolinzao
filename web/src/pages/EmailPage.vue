@@ -44,7 +44,7 @@ onMounted(load);
       <div class="row">
         <div>
           <strong>邮箱能力</strong>
-          <p class="muted">关闭后登录页不出现 magic link，也不强制验证邮箱。</p>
+          <p class="muted">关闭后登录页不出现邮箱验证码，也不强制验证邮箱。</p>
         </div>
         <el-switch v-if="ready" :model-value="enabled" :disabled="!smtpConfigured && !enabled" @change="save" />
       </div>
