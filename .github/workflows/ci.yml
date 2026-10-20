@@ -387,15 +387,17 @@ jobs:
         id: guard
         env:
           STAGING_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          STAGING_SUPER: ${{ secrets.STAGING_SUPER_PASSWORD }}
           PROD_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          if [ -z "${STAGING_PATH:-}" ] || [ -z "${DLZ_DOMAIN:-}" ]; then
+          if [ -z "${STAGING_PATH:-}" ] || [ -z "${STAGING_SUPER:-}" ] || [ -z "${DLZ_DOMAIN:-}" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::staging 未配置（STAGING_DEPLOY_PATH secret 或 STAGING_DLZ_DOMAIN var 缺失），跳过测试服部署"
+            echo "::notice::staging 未配置（STAGING_DEPLOY_PATH / STAGING_SUPER_PASSWORD secret 或 STAGING_DLZ_DOMAIN var 缺失），跳过测试服部署"
             exit 0
           fi
-          if [ "${STAGING_PATH}" = "${PROD_PATH:-__unset__}" ]; then
+          # PROD_PATH 是 production 环境的 secret，在 staging 环境里不可见则为空，此时静默放过。
+          if [ -n "${PROD_PATH:-}" ] && [ "${STAGING_PATH}" = "${PROD_PATH}" ]; then
             echo "::error::STAGING_DEPLOY_PATH 与生产 DEPLOY_PATH 相同，拒绝部署（会覆盖生产数据）"
             exit 1
           fi
@@ -415,6 +417,61 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+      - name: 确保 staging secrets 存在（缺才建，绝不重建已有）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          STAGING_SUPER_PASSWORD: ${{ secrets.STAGING_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          # 远端生成随机值依赖 openssl，没有就直说（不静默降级）。
+          if ! SSH "command -v openssl >/dev/null 2>&1"; then
+            echo "::error::manager 上缺少 openssl，无法生成 staging secret（db 密码/local_key 需要它）"
+            exit 1
+          fi
+          # 超管密码来自 GitHub：已存在就跳过（stdin 被丢弃），缺才建；值只走 stdin，
+          # 不出现在远端命令行、不 echo、不写 GITHUB_ENV/OUTPUT（GitHub 已自动 mask secrets）。
+          if SSH "docker secret inspect dlz_stg_super_password >/dev/null 2>&1"; then
+            echo "dlz_stg_super_password: exists"
+          else
+            printf '%s' "$STAGING_SUPER_PASSWORD" | SSH "docker secret create dlz_stg_super_password - >/dev/null"
+            echo "dlz_stg_super_password: created"
+          fi
+          # 其余四个在远端一次会话里幂等处理：heredoc 单引号防 runner 侧展开，
+          # 远端 set -euo pipefail、不开 set -x；只打印 created/exists，不打印值。
+          # docker secret 不可变：已存在的 db 密码绝不重建，否则和已有 pgdata 对不上。
+          SSH 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          have() { docker secret inspect "$1" >/dev/null 2>&1; }
+          if have dlz_stg_db_password && have dlz_stg_database_url; then
+            echo "dlz_stg_db_password: exists"
+            echo "dlz_stg_database_url: exists"
+          elif have dlz_stg_db_password || have dlz_stg_database_url; then
+            echo "::error::dlz_stg_db_password 与 dlz_stg_database_url 必须成对存在（一有一无），请按文档重置 staging，不要自动生成新的"
+            exit 1
+          else
+            PW="$(openssl rand -hex 24)"
+            printf '%s' "$PW" | docker secret create dlz_stg_db_password - >/dev/null
+            printf '%s' "postgres://duolinzao:${PW}@db:5432/duolinzao" | docker secret create dlz_stg_database_url - >/dev/null
+            echo "dlz_stg_db_password: created"
+            echo "dlz_stg_database_url: created"
+          fi
+          if have dlz_stg_local_key; then
+            echo "dlz_stg_local_key: exists"
+          else
+            openssl rand -base64 32 | tr -d '\n' | docker secret create dlz_stg_local_key - >/dev/null
+            echo "dlz_stg_local_key: created"
+          fi
+          if have dlz_stg_smtp_password; then
+            echo "dlz_stg_smtp_password: exists"
+          else
+            printf '%s' 'unused' | docker secret create dlz_stg_smtp_password - >/dev/null
+            echo "dlz_stg_smtp_password: created"
+          fi
+          REMOTE
       - name: 同步 stack 文件到 manager
         if: steps.guard.outputs.ready == 'true'
         env:
