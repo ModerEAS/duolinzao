@@ -144,18 +144,44 @@ pub async fn create_invite(
     state: &AppState,
     user: &CurrentUser,
     max_uses: Option<i32>,
+    role: Option<String>,
+    canteen_ids: Vec<Uuid>,
 ) -> Result<Value, AppError> {
     let hit = authorize(&user.assignments, Perm::UserInvite, None)?;
     let max_uses = max_uses.unwrap_or(1);
     if max_uses < 1 {
         return Err(AppError::bad("max_uses_invalid", "可使用次数至少为 1"));
     }
+    // 邀请码只发 employee / canteen，不发 admin / super_admin。
+    let role = role.as_deref().unwrap_or("employee");
+    if !matches!(role, "employee" | "canteen") {
+        return Err(AppError::bad("role_invalid", "邀请码角色只能是员工或食堂"));
+    }
+    if role == "employee" {
+        if !canteen_ids.is_empty() {
+            return Err(AppError::bad("scope_invalid", "员工邀请码不带食堂范围"));
+        }
+    } else {
+        if canteen_ids.is_empty() {
+            return Err(AppError::bad("scope_invalid", "食堂邀请码必须带食堂范围"));
+        }
+        for id in &canteen_ids {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM canteen WHERE id = $1)")
+                    .bind(id)
+                    .fetch_one(&state.pool)
+                    .await?;
+            if !exists {
+                return Err(AppError::bad("canteen_not_found", "食堂不存在"));
+            }
+        }
+    }
     let code = random_token();
     let now = state.clock.now();
     let id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO invite_code (code_hash, created_by, created_at, max_uses)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO invite_code (code_hash, created_by, created_at, max_uses, role, canteen_ids)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         "#,
     )
@@ -163,6 +189,8 @@ pub async fn create_invite(
     .bind(user.account_id)
     .bind(now)
     .bind(max_uses)
+    .bind(role)
+    .bind(&canteen_ids)
     .fetch_one(&state.pool)
     .await?;
     audit_user(
@@ -172,10 +200,10 @@ pub async fn create_invite(
         "invite_create",
         Some("invite"),
         Some(id.to_string()),
-        json!({"max_uses": max_uses}),
+        json!({"max_uses": max_uses, "role": role, "canteen_ids": canteen_ids}),
     )
     .await?;
-    Ok(json!({"id": id, "code": code, "created_at": now, "max_uses": max_uses}))
+    Ok(json!({"id": id, "code": code, "created_at": now, "max_uses": max_uses, "role": role, "canteen_ids": canteen_ids}))
 }
 
 pub async fn update_invite_max_uses(
@@ -268,6 +296,7 @@ pub async fn list_invites(state: &AppState, user: &CurrentUser) -> Result<Value,
     let rows = sqlx::query(
         r#"
         SELECT i.id, i.created_at, i.used_at, i.max_uses, i.used_count, i.revoked_at,
+               i.role, i.canteen_ids,
                a.username AS used_by, a.display_name AS used_by_display_name
         FROM invite_code i
         LEFT JOIN account a ON a.id = i.used_by
@@ -286,6 +315,8 @@ pub async fn list_invites(state: &AppState, user: &CurrentUser) -> Result<Value,
             "max_uses": row.get::<i32, _>("max_uses"),
             "used_count": row.get::<i32, _>("used_count"),
             "revoked_at": row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("revoked_at"),
+            "role": row.get::<String, _>("role"),
+            "canteen_ids": row.get::<Vec<Uuid>, _>("canteen_ids"),
         })).collect::<Vec<_>>()
     }))
 }

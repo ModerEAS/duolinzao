@@ -132,7 +132,7 @@ pub async fn register(
     let mut tx = state.pool.begin().await?;
     let invite = sqlx::query(
         r#"
-        SELECT id, max_uses, used_count, revoked_at FROM invite_code
+        SELECT id, max_uses, used_count, revoked_at, role, canteen_ids FROM invite_code
         WHERE code_hash = $1
         FOR UPDATE
         "#,
@@ -171,16 +171,31 @@ pub async fn register(
     .bind(now)
     .fetch_one(&mut *tx)
     .await?;
+    // 邀请码自带角色与范围：旧码默认为 employee + 空范围。
+    let invite_role: String = invite.get("role");
+    let invite_canteens: Vec<Uuid> = invite.get("canteen_ids");
     sqlx::query(
         r#"
         INSERT INTO role_assignment (account_id, role, canteen_ids, created_at)
-        VALUES ($1, 'employee', '{}', $2)
+        VALUES ($1, $2, $3, $4)
         "#,
     )
     .bind(account_id)
+    .bind(&invite_role)
+    .bind(&invite_canteens)
     .bind(now)
     .execute(&mut *tx)
     .await?;
+    // 对齐 assign_role：食堂身份同步写入 canteen_staff。
+    if invite_role == "canteen" {
+        for id in &invite_canteens {
+            sqlx::query("INSERT INTO canteen_staff (account_id, canteen_id) VALUES ($1, $2)")
+                .bind(account_id)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
     // used_by/used_at 只保留末次使用；次数以 used_count 为准。
     sqlx::query(
         "UPDATE invite_code SET used_by = $1, used_at = $2, used_count = used_count + 1 WHERE id = $3",
@@ -196,7 +211,7 @@ pub async fn register(
             at: now,
             actor_id: Some(account_id),
             actor_username: Some(username.clone()),
-            role: Some("employee".into()),
+            role: Some(invite_role.clone()),
             scope: "self".into(),
             action: "register".into(),
             object_type: Some("account".into()),
