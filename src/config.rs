@@ -7,6 +7,28 @@ use toml::Value;
 
 use crate::crypto::decode_local_key;
 
+/// 邮箱投递方式：`smtp` 真发（生产默认），`log` 只写应用日志（测试服专用）。
+/// log 模式把收件人+验证码打到日志（带 `[email:log-only]` 标记），不连 SMTP，
+/// 方便在测试服走通邮箱 OTP 登录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmailDelivery {
+    #[default]
+    Smtp,
+    Log,
+}
+
+impl EmailDelivery {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_lowercase().as_str() {
+            "smtp" => Ok(Self::Smtp),
+            "log" => Ok(Self::Log),
+            other => Err(format!(
+                "email.delivery 非法: {other}（只能是 smtp 或 log）"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub super_username: String,
@@ -15,6 +37,7 @@ pub struct AppConfig {
     pub webauthn_origin: String,
     pub webauthn_rp_name: String,
     pub email_enabled: bool,
+    pub email_delivery: EmailDelivery,
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_username: String,
@@ -90,6 +113,10 @@ impl AppConfig {
         let rp_origin = req_string(webauthn, "webauthn.rp_origin", "rp_origin", &mut missing);
         let rp_name = optional_string(webauthn, "rp_name").unwrap_or_else(|| "多邻灶".to_string());
         let email_enabled = optional_bool(email, "enabled").unwrap_or(false);
+        let email_delivery = match optional_string(email, "delivery") {
+            None => EmailDelivery::default(),
+            Some(raw) => EmailDelivery::parse(&raw)?,
+        };
 
         let lock_time = req_time(schedule, "schedule.lock_time", "lock_time", &mut missing);
         let breakfast_after = req_time(
@@ -141,7 +168,8 @@ impl AppConfig {
         let smtp_username = optional_string(smtp, "username").unwrap_or_default();
         let smtp_password = optional_string(smtp, "password").unwrap_or_default();
         let mut smtp_from = optional_string(smtp, "from").unwrap_or_default();
-        if email_enabled {
+        // log 模式不连 SMTP，不校验 smtp 字段；只有真发才要求配齐。
+        if email_enabled && email_delivery == EmailDelivery::Smtp {
             if smtp_host.is_empty() || is_placeholder(&smtp_host) {
                 missing.push("smtp.host".into());
                 smtp_host.clear();
@@ -184,6 +212,7 @@ impl AppConfig {
             webauthn_origin: rp_origin.unwrap(),
             webauthn_rp_name: rp_name,
             email_enabled,
+            email_delivery,
             smtp_host,
             smtp_port,
             smtp_username,
@@ -214,7 +243,8 @@ fn apply_env_overrides(
     value: &mut Value,
     get: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
-    const RULES: [(&[&str], &str); 6] = [
+    const RULES: [(&[&str], &str); 7] = [
+        (&["email", "delivery"], "DLZ_EMAIL_DELIVERY"),
         (&["database", "url"], "DLZ_DATABASE_URL"),
         (&["super_admin", "password"], "DLZ_SUPER_PASSWORD"),
         (&["crypto", "local_key"], "DLZ_LOCAL_KEY"),
@@ -425,6 +455,7 @@ rp_name = "多邻灶"
 
 [email]
 enabled = {email}
+delivery = "smtp"
 
 [smtp]
 host = "127.0.0.1"
@@ -516,6 +547,36 @@ mod tests {
         assert!(err.contains("smtp.host"), "{err}");
     }
 
+    #[test]
+    fn email_log_delivery_skips_smtp_and_parses() {
+        // 测试服模式：enabled + delivery=log 时 smtp 可空，OTP 照样可用。
+        let raw = example_config()
+            .replace("enabled = false", "enabled = true")
+            .replace("delivery = \"smtp\"", "delivery = \"log\"")
+            .replace("host = \"127.0.0.1\"", "host = \"\"")
+            .replace("from = \"noreply@example.com\"", "from = \"\"")
+            .replace("port = 2525", "port = 0");
+        let config = AppConfig::parse(&raw).expect("log 模式不该要求 smtp");
+        assert!(config.email_enabled);
+        assert_eq!(config.email_delivery, EmailDelivery::Log);
+        // 缺省仍是真发：生产行为不变。
+        let fallback = AppConfig::parse(&example_config()).expect("example");
+        assert_eq!(fallback.email_delivery, EmailDelivery::Smtp);
+    }
+
+    #[test]
+    fn email_delivery_rejects_unknown_and_env_override() {
+        let raw = example_config().replace("delivery = \"smtp\"", "delivery = \"sendmail\"");
+        let err = AppConfig::parse(&raw).expect_err("未知投递方式必须报错");
+        assert!(err.contains("email.delivery"), "{err}");
+        // DLZ_EMAIL_DELIVERY 环境覆盖（staging 由 stack 注入 log）。
+        let env = env_map(&[("DLZ_EMAIL_DELIVERY", " log ")]);
+        let config =
+            AppConfig::parse_with_env(&example_config(), &|k| env.get(k).cloned())
+                .expect("env 覆盖");
+        assert_eq!(config.email_delivery, EmailDelivery::Log);
+    }
+
     fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
         pairs
             .iter()
@@ -566,6 +627,25 @@ mod tests {
         assert!(config.trust_proxy);
         assert_eq!(config.bind.to_string(), "0.0.0.0:8080");
         assert_eq!(config.database_url, "postgres://u:p@db:5432/x");
+    }
+
+    #[test]
+    fn staging_config_uses_log_delivery() {
+        // deploy/config.staging.toml：密钥齐了能起，邮箱走日志投递且默认开启。
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/config.staging.toml");
+        let raw = std::fs::read_to_string(path).expect("staging config 存在");
+        let env = env_map(&[
+            ("DLZ_DATABASE_URL", "postgres://u:p@db:5432/x"),
+            ("DLZ_SUPER_PASSWORD", "stg-pass-1"),
+            ("DLZ_LOCAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="),
+            ("DLZ_WEBAUTHN_RP_ID", "staging.example.com"),
+            ("DLZ_WEBAUTHN_ORIGIN", "https://staging.example.com"),
+        ]);
+        let config =
+            AppConfig::parse_with_env(&raw, &|k| env.get(k).cloned()).expect("staging 应启动");
+        assert!(config.email_enabled);
+        assert_eq!(config.email_delivery, EmailDelivery::Log);
+        assert_eq!(config.dish_image_dir, "/srv/duolinzao-staging/images");
     }
 
     #[test]

@@ -1,0 +1,55 @@
+# 多邻灶测试服配置（随 stack.staging.yml 一起 scp 到 manager 的 STAGING 目录）。
+# 与生产 config.toml 的差异只有两处，其余保持一致：
+#   1. [email] enabled=true + delivery="log"：不真发邮件，验证码打应用日志
+#      （带 `[email:log-only]` 标记，见 docs/deploy.md「测试服」一节取码方法）；
+#   2. [dish_image] dir 指向 /srv/duolinzao-staging/images（与生产目录隔离）。
+# 密钥同样不进文件，由 DLZ_*_FILE（/run/secrets/dlz_stg_*）注入，缺密钥拒绝启动。
+
+[super_admin]
+username = "root"
+# password 由 DLZ_SUPER_PASSWORD_FILE 注入。
+
+[webauthn]
+# rp_id / rp_origin 由 DLZ_WEBAUTHN_RP_ID / DLZ_WEBAUTHN_ORIGIN 注入
+#（stack.staging.yml 里按 staging 域名拼好）。
+rp_name = "多邻灶"
+
+[email]
+enabled = true
+delivery = "log"
+
+[smtp]
+host = ""
+port = 587
+username = ""
+# password 由 DLZ_SMTP_PASSWORD_FILE 注入（log 模式不连 SMTP，填占位即可）。
+from = ""
+
+[schedule]
+lock_time = "09:00"
+breakfast_after = "09:30"
+lunch_after = "13:30"
+dinner_after = "19:30"
+
+[score_alert]
+# 初始值；超管可在“强提醒阈值”页改（rating.strong_alert_config）。
+mean_threshold = "-0.5"
+min_samples = "5"
+
+[crypto]
+# local_key 由 DLZ_LOCAL_KEY_FILE 注入（LLM key 加密根密钥）。
+
+[dish_image]
+dir = "/srv/duolinzao-staging/images"
+max_bytes = "2097152"
+
+[server]
+bind = "0.0.0.0:8080"
+# Traefik 网关终结 HTTPS、后端只听 HTTP：必须 true，浏览器才在 HTTPS 下回送 Cookie。
+cookie_secure = true
+# Traefik 后面配 true：只信一层 X-Forwarded-For。Traefik 侧必须设置该头。
+trust_proxy = true
+static_dir = "/app/static"
+
+[database]
+# url 由 DLZ_DATABASE_URL_FILE 注入（形如 postgres://duolinzao:密码@db:5432/duolinzao）。

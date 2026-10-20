@@ -362,9 +362,12 @@ pub async fn get_email_enabled(state: &AppState, user: &CurrentUser) -> Result<V
 }
 
 fn smtp_configured(state: &AppState) -> bool {
-    !state.config.smtp_host.is_empty()
-        && !state.config.smtp_from.is_empty()
-        && state.config.smtp_port != 0
+    // log 投递（测试服）不连 SMTP，视为已就绪，免得超管打不开邮箱开关。
+    use crate::config::EmailDelivery;
+    state.config.email_delivery == EmailDelivery::Log
+        || (!state.config.smtp_host.is_empty()
+            && !state.config.smtp_from.is_empty()
+            && state.config.smtp_port != 0)
 }
 
 pub async fn set_score_alert(

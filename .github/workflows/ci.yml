@@ -366,3 +366,186 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "docker image prune -f"
+
+  deploy-staging:
+    name: 部署到测试服（staging，自动）
+    runs-on: ubuntu-latest
+    needs: [test, e2e, e2e-scale, image]
+    # 仅主仓 master push；fork 与 PR 永不触发。测试服与生产同 manager、同集群、独立 stack。
+    if: github.repository == 'ModerRAS/duolinzao' && github.ref == 'refs/heads/master' && github.event_name == 'push'
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    environment: staging
+    env:
+      # 镜像 tag 与 image job 的 `sha-<commit>` 对齐；域名/目录走 staging vars/secrets。
+      IMAGE_TAG: sha-${{ github.sha }}
+      DLZ_DOMAIN: ${{ vars.STAGING_DLZ_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查 staging 配置（缺则跳过，不染红 master）
+        id: guard
+        env:
+          STAGING_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          STAGING_SUPER: ${{ secrets.STAGING_SUPER_PASSWORD }}
+          PROD_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_PATH:-}" ] || [ -z "${STAGING_SUPER:-}" ] || [ -z "${DLZ_DOMAIN:-}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::staging 未配置（STAGING_DEPLOY_PATH / STAGING_SUPER_PASSWORD secret 或 STAGING_DLZ_DOMAIN var 缺失），跳过测试服部署"
+            exit 0
+          fi
+          # PROD_PATH 是 production 环境的 secret，在 staging 环境里不可见则为空，此时静默放过。
+          if [ -n "${PROD_PATH:-}" ] && [ "${STAGING_PATH}" = "${PROD_PATH}" ]; then
+            echo "::error::STAGING_DEPLOY_PATH 与生产 DEPLOY_PATH 相同，拒绝部署（会覆盖生产数据）"
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: 算配置版本（config.staging.toml sha256 前 12 位）
+        if: steps.guard.outputs.ready == 'true'
+        run: echo "CONFIG_VERSION=$(sha256sum deploy/config.staging.toml | cut -c1-12)" >> "$GITHUB_ENV"
+      - name: 准备 SSH（key + known_hosts，强制校验主机密钥）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: 确保 staging secrets 存在（缺才建，绝不重建已有）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          STAGING_SUPER_PASSWORD: ${{ secrets.STAGING_SUPER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          # 远端生成随机值依赖 openssl，没有就直说（不静默降级）。
+          if ! SSH "command -v openssl >/dev/null 2>&1"; then
+            echo "::error::manager 上缺少 openssl，无法生成 staging secret（db 密码/local_key 需要它）"
+            exit 1
+          fi
+          # 超管密码来自 GitHub：已存在就跳过（stdin 被丢弃），缺才建；值只走 stdin，
+          # 不出现在远端命令行、不 echo、不写 GITHUB_ENV/OUTPUT（GitHub 已自动 mask secrets）。
+          if SSH "docker secret inspect dlz_stg_super_password >/dev/null 2>&1"; then
+            echo "dlz_stg_super_password: exists"
+          else
+            printf '%s' "$STAGING_SUPER_PASSWORD" | SSH "docker secret create dlz_stg_super_password - >/dev/null"
+            echo "dlz_stg_super_password: created"
+          fi
+          # 其余四个在远端一次会话里幂等处理：heredoc 单引号防 runner 侧展开，
+          # 远端 set -euo pipefail、不开 set -x；只打印 created/exists，不打印值。
+          # docker secret 不可变：已存在的 db 密码绝不重建，否则和已有 pgdata 对不上。
+          SSH 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          have() { docker secret inspect "$1" >/dev/null 2>&1; }
+          if have dlz_stg_db_password && have dlz_stg_database_url; then
+            echo "dlz_stg_db_password: exists"
+            echo "dlz_stg_database_url: exists"
+          elif have dlz_stg_db_password || have dlz_stg_database_url; then
+            echo "::error::dlz_stg_db_password 与 dlz_stg_database_url 必须成对存在（一有一无），请按文档重置 staging，不要自动生成新的"
+            exit 1
+          else
+            PW="$(openssl rand -hex 24)"
+            printf '%s' "$PW" | docker secret create dlz_stg_db_password - >/dev/null
+            printf '%s' "postgres://duolinzao:${PW}@db:5432/duolinzao" | docker secret create dlz_stg_database_url - >/dev/null
+            echo "dlz_stg_db_password: created"
+            echo "dlz_stg_database_url: created"
+          fi
+          if have dlz_stg_local_key; then
+            echo "dlz_stg_local_key: exists"
+          else
+            openssl rand -base64 32 | tr -d '\n' | docker secret create dlz_stg_local_key - >/dev/null
+            echo "dlz_stg_local_key: created"
+          fi
+          if have dlz_stg_smtp_password; then
+            echo "dlz_stg_smtp_password: exists"
+          else
+            printf '%s' 'unused' | docker secret create dlz_stg_smtp_password - >/dev/null
+            echo "dlz_stg_smtp_password: created"
+          fi
+          REMOTE
+      - name: 同步 stack 文件到 manager
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          SSH "mkdir -p '${DEPLOY_PATH}'"
+          scp -i ~/.ssh/id_deploy -P "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
+            deploy/stack.staging.yml deploy/config.staging.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
+          # manager 侧文件名统一为 stack.yml / config.toml，deploy 命令与生产同形。
+          SSH "cd '${DEPLOY_PATH}' && mv -f stack.staging.yml stack.yml && mv -f config.staging.toml config.toml"
+      - name: 拉镜像并发版（start-first，失败自动 rollback）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_USER: ${{ github.repository_owner }}
+          TRAEFIK_ENTRYPOINT: ${{ vars.TRAEFIK_ENTRYPOINT }}
+          TRAEFIK_CERTRESOLVER: ${{ vars.TRAEFIK_CERTRESOLVER }}
+          TRAEFIK_NETWORK: ${{ vars.TRAEFIK_NETWORK }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          if [ -n "${GHCR_PULL_TOKEN:-}" ]; then
+            printf '%s' "$GHCR_PULL_TOKEN" | SSH "docker login ghcr.io -u '${GHCR_USER}' --password-stdin"
+          fi
+          SSH "cd '${DEPLOY_PATH}' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_TAG='${IMAGE_TAG}' DLZ_DOMAIN='${DLZ_DOMAIN:-}' TRAEFIK_ENTRYPOINT='${TRAEFIK_ENTRYPOINT:-}' TRAEFIK_CERTRESOLVER='${TRAEFIK_CERTRESOLVER:-}' TRAEFIK_NETWORK='${TRAEFIK_NETWORK:-}' CONFIG_VERSION='${CONFIG_VERSION}' docker stack deploy -c stack.yml --with-registry-auth duolinzao-staging"
+      - name: 等 duolinzao-staging_app 收敛到新镜像（超时失败）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          WANT="ghcr.io/moderras/duolinzao:${IMAGE_TAG}"
+          for _ in $(seq 1 40); do
+            STATE="$(SSH "docker service inspect duolinzao-staging_app --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
+            SPEC="$(SSH "docker service inspect duolinzao-staging_app --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'" 2>/dev/null || true)"
+            RUNNING="$(SSH "docker service ps duolinzao-staging_app --filter desired-state=running --format '{{.Image}} {{.CurrentState}}'" 2>/dev/null | grep -c "^${WANT}\(@[^ ]*\)\? .*Running" || true)"
+            RUNNING="${RUNNING:-0}"
+            echo "update=${STATE} spec=${SPEC} running=${RUNNING}"
+            case "${STATE}" in
+              *rollback*|*paused*) echo "更新失败：${STATE}"; exit 1;;
+            esac
+            SPEC_OK=0
+            case "${SPEC}" in
+              "${WANT}"|"${WANT}"@*) SPEC_OK=1 ;;
+            esac
+            if { [ "${SPEC_OK}" -eq 1 ] || [ "${RUNNING}" -ge 1 ]; } && [ "${RUNNING}" -ge 1 ]; then
+              echo CONVERGED
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "收敛超时"; exit 1
+      - name: 公网健康检查 https://staging 域名/healthz（带重试）
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          DOMAIN="${DLZ_DOMAIN:-example.com}"
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://${DOMAIN}/healthz"; then
+              echo; echo HEALTHY
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "健康检查失败"; exit 1

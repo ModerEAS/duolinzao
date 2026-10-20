@@ -123,3 +123,74 @@ docker volume ls | grep duolinzao   # 正常应无 duolinzao 卷：持久数据�
 ```
 
 db 数据在宿主机目录 `DEPLOY_PATH/pgdata`（bind mount，随 db 节点 placement 固定）。备份即 tar 文件夹：`tar czf /backup/pg-$(date +%F).tgz -C <DEPLOY_PATH> pgdata`（停服或接受 crash-consistent）。恢复：停 db 服务后解压回去，保证属主仍是 UID 999。
+
+## 6. 测试服（staging）
+
+同一集群、独立 stack `duolinzao-staging`：自带独立小配额 Postgres（192M limit，`shared_buffers=32MB`，`max_connections=20`）与 app（192M limit），与生产零共享（service/router/secret/config/网络/数据目录全独立）。master 全绿后 CI 自动部署，无需审批；生产 `deploy` 保持人工审批不变。
+
+### 6.1 DNS
+
+staging 域名建议 `staging.<生产域名>`，例如生产是 `example.com` 则 staging 用 `staging.example.com`，解析到同一 Traefik 入口。证书由同一 certresolver 签发（通配或按需申请，Traefik 侧配置不变）。
+
+### 6.2 docker secret（5 个，全 external，CI 自动确保，无需手工建）
+
+staging 的 5 个 secret（名字带 `stg` 前缀，不与生产冲突）由 `deploy-staging` job 在每次部署前幂等确保，**缺才建、绝不重建已有**：
+
+| secret | 来源 |
+|---|---|
+| `dlz_stg_super_password` | GitHub `staging` environment 的 secret `STAGING_SUPER_PASSWORD`（经 stdin 传，不进命令行） |
+| `dlz_stg_db_password` / `dlz_stg_database_url` | 首次部署时在 manager 上用 `openssl rand -hex 24` 生成，拼成 `postgres://duolinzao:<密码>@db:5432/duolinzao` 一起建 |
+| `dlz_stg_local_key` | 首次部署时在 manager 上 `openssl rand -base64 32` 生成 |
+| `dlz_stg_smtp_password` | 占位 `unused`（log 模式不连 SMTP；stack 引用了 external secret，不存在会部署失败） |
+
+注意：`docker secret` 不可变，已存在的 db 密码永远不会被覆盖（否则和已有 `pgdata` 对不上）。若 `dlz_stg_db_password` 与 `dlz_stg_database_url` 一有一无（人为误删其中一个），job 会直接报错，要求按 6.6 重置，不自动生成新的。`@db:5432` 中的主机名就是 `db`：staging 内部网络独立，service 发现只在栈内有效，app 照样用短名连自己的库。
+
+### 6.3 仓库侧配置
+
+建 environment `staging`（**不加** Required reviewers，自动部署），在该 environment 里设以下三项（**都是 environment 级**，任一缺失 `deploy-staging` job 就**跳过并打 notice**，master 保持绿色）：
+
+| 名称 | 位置 | 示例 | 说明 |
+|---|---|---|---|
+| `STAGING_DLZ_DOMAIN` | environment var | `staging.example.com` | staging 域名；同时用于 Traefik Host 规则与 webauthn rp_id/origin |
+| `STAGING_DEPLOY_PATH` | environment secret | 如 `/opt/duolinzao-staging` | manager 上放 staging stack 的目录，**不得与生产 `DEPLOY_PATH` 相同**（CI 会校验，相同直接拒绝部署；生产路径在 staging 环境不可见时放过） |
+| `STAGING_SUPER_PASSWORD` | environment secret | 强随机密码 | 测试服超管密码，只在 secret 缺失时建一次 |
+
+其余 SSH 凭据（`DEPLOY_HOST/PORT/USER/SSH_KEY/KNOWN_HOSTS`、`GHCR_PULL_TOKEN`）与 Traefik 三变量复用生产的。
+
+manager 上仍需手工做两件事：建好 staging 数据目录（各会跑 app/db 的节点都要建，权限 `755`，例如 `sudo mkdir -p -m 755 /opt/duolinzao-staging`）和 DNS（见 6.1）。这两样没好之前 job 照样跳过，不会把 master 搞红。
+
+### 6.4 部署与验证
+
+每次 master push 全绿后自动：检查配置 → 确保 5 个 `dlz_stg_*` secret（缺才建）→ scp `stack.staging.yml` + `config.staging.toml` → `docker stack deploy ... duolinzao-staging` → 轮询 `duolinzao-staging_app` 收敛 → `curl https://staging 域名/healthz`。生产发布流程不变。
+
+```bash
+docker stack services duolinzao-staging
+docker service logs -f duolinzao-staging_app
+curl -fsS https://staging.example.com/healthz
+```
+
+### 6.5 邮件验证码怎么看（log 模式）
+
+staging 的 `[email]` 配的是 `enabled = true` + `delivery = "log"`：不连 SMTP，验证码直接打进应用日志，行里带 `[email:log-only]` 标记：
+
+```bash
+docker service logs duolinzao-staging_app 2>&1 | grep 'email:log-only'
+```
+
+从该行取 6 位码，在登录页走“邮箱验证码”登录即可。生产默认仍是 `delivery = "smtp"` 真发，行为不变。
+
+### 6.6 改超管密码与清库重置
+
+改测试服超管密码：docker secret 不可变，**只改 GitHub 上 `staging` 环境的 `STAGING_SUPER_PASSWORD` 不会自动生效**。步骤：`docker stack rm duolinzao-staging` → `docker secret rm dlz_stg_super_password` → 重新跑 CI（re-run `deploy-staging` 或等下次 master push），新密码会被建进去。不要动生产的 `dlz_super_password`。
+
+彻底重置（含换库密码）：
+
+```bash
+docker stack rm duolinzao-staging
+# 等 service 全退（docker stack services duolinzao-staging 为空）后再删：
+docker secret rm dlz_stg_db_password dlz_stg_database_url dlz_stg_super_password dlz_stg_local_key dlz_stg_smtp_password
+rm -rf <STAGING_DEPLOY_PATH>/pgdata <STAGING_DEPLOY_PATH>/images
+# 再重新跑 CI（re-run deploy-staging 或下次 master push）：secret 与库都会重建。
+```
+
+只删 `dlz_stg_*`，**绝不动生产 `dlz_*`**。

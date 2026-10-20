@@ -10,7 +10,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use webauthn_rs::prelude::{PasskeyAuthentication, PasskeyRegistration, Webauthn, WebauthnBuilder};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, EmailDelivery};
 use crate::domain::{llm_request, parse_dsl_text, MealDsl};
 use crate::error::AppError;
 
@@ -112,6 +112,18 @@ impl Mailer for CapturingMailer {
             subject.to_string(),
             body.to_string(),
         ));
+        Ok(())
+    }
+}
+
+/// 测试服专用：不连 SMTP，把收件人+验证码写进应用日志。
+/// 日志行带 `[email:log-only]` 标记，方便 `docker service logs` 里 grep 取码。
+pub struct LogOnlyMailer;
+
+#[async_trait]
+impl Mailer for LogOnlyMailer {
+    async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), String> {
+        tracing::warn!(to = %to, subject = %subject, "[email:log-only] {body}");
         Ok(())
     }
 }
@@ -353,7 +365,11 @@ impl AppState {
     }
 
     pub fn production(pool: PgPool, config: AppConfig) -> Result<Self, AppError> {
-        let mailer: std::sync::Arc<dyn Mailer> = std::sync::Arc::new(SmtpMailer::new(&config));
+        // delivery=log（测试服）走日志投递，生产默认仍是 SMTP 真发。
+        let mailer: std::sync::Arc<dyn Mailer> = match config.email_delivery {
+            EmailDelivery::Log => std::sync::Arc::new(LogOnlyMailer),
+            EmailDelivery::Smtp => std::sync::Arc::new(SmtpMailer::new(&config)),
+        };
         let templates: std::sync::Arc<dyn TemplateBackend> =
             std::sync::Arc::new(HttpTemplateBackend::new());
         // 生产 clock 即测试时钟载体：未拨时行为与系统钟完全一致。
@@ -374,4 +390,19 @@ fn build_webauthn(config: &AppConfig) -> Result<Webauthn, AppError> {
             tracing::error!(error = ?err, "webauthn");
             AppError::bad("config", "WebAuthn 配置无效")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn log_only_mailer_never_fails() {
+        // 测试服投递：无 SMTP 也 Ok，验证码走日志（调用方照常 accepted）。
+        let mailer = LogOnlyMailer;
+        mailer
+            .send("user@example.com", "主题", "多邻灶登录验证码：123456")
+            .await
+            .expect("log 投递不应失败");
+    }
 }

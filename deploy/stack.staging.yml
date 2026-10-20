@@ -1,0 +1,157 @@
+# 多邻灶测试服（staging）Swarm 栈：与生产同集群、完全独立的 stack。
+# 与生产 `stack.yml` 的关系：独立文件而非参数化同一份——router/service/secret/
+# config/网络名、两档资源配额全部不同，硬参数化会让生产文件布满条件分支；
+# 独立文件复制结构、只改小资源与改名，生产行为零触碰（见 PR 描述）。
+#
+# 隔离清单（与生产零共享）：
+#   stack 名：duolinzao-staging（部署时指定）
+#   service 名：duolinzao-staging_db / duolinzao-staging_app（Swarm 按 <stack>_<service> 命名）
+#   Traefik router/service：duolinzao-staging（Host 用 staging 域名，不与生产冲突）
+#   db：独立 Postgres，自带 192M limit / 96M reservation，
+#       shared_buffers=32MB，max_connections=20（两台 2G 节点的内存余量）
+#   app：192M limit / 64M reservation
+#   数据目录：STAGING_DEPLOY_PATH（不得与生产 DEPLOY_PATH 相同，见 docs/deploy.md）
+#   secrets：独立一套 dlz_stg_*（external，docs/deploy.md 有创建命令）
+#   config 对象：duolinzao_staging_config_${CONFIG_VERSION}（文件见 config.staging.toml）
+#   内部网络：duolinzao-staging-internal（overlay + internal，db 只连它）
+#   邮件：delivery=log，只写应用日志不真发（config.staging.toml 的 [email]）
+#
+# 变量（含义与生产一致，CI 从 staging vars/secrets 注入；默认值仅供本地校验）：
+#   DLZ_DOMAIN=${DLZ_DOMAIN:-example.com}（staging 注入 STAGING_DLZ_DOMAIN 的值，
+#       如 staging.example.com；同时用于 Traefik Host 与 webauthn rp_id/origin）
+#   TRAEFIK_ENTRYPOINT / TRAEFIK_CERTRESOLVER / TRAEFIK_NETWORK：与生产同义
+#   CONFIG_VERSION=config.staging.toml 的 sha256 前 12 位（CI 算好传入）
+#   DEPLOY_PATH：无默认值，部署时必须注入 staging 目录（CI 从 STAGING_DEPLOY_PATH 注入）
+#
+# 用法（manager 上，STAGING 目录内）：IMAGE_TAG=sha-xxx DLZ_DOMAIN=staging.example.com \
+#   docker stack deploy -c stack.staging.yml --with-registry-auth duolinzao-staging
+# 校验：docker compose -f deploy/stack.staging.yml config（带与不带变量各一次）。
+# 首次准备：docs/deploy.md「测试服」一节。
+
+configs:
+  duolinzao_staging_config:
+    name: duolinzao_staging_config_${CONFIG_VERSION:-dev}
+    file: ./config.staging.toml
+
+secrets:
+  dlz_stg_db_password:
+    external: true
+  dlz_stg_database_url:
+    external: true
+  dlz_stg_super_password:
+    external: true
+  dlz_stg_local_key:
+    external: true
+  dlz_stg_smtp_password:
+    external: true
+
+networks:
+  traefik-public:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik-public}
+  duolinzao-staging-internal:
+    driver: overlay
+    internal: true
+
+services:
+  db:
+    image: postgres:16
+    networks:
+      - duolinzao-staging-internal
+    environment:
+      POSTGRES_USER: duolinzao
+      POSTGRES_DB: duolinzao
+      POSTGRES_PASSWORD_FILE: /run/secrets/dlz_stg_db_password
+      PGDATA: /srv/duolinzao-staging/pgdata
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=20"]
+    volumes:
+      - ${DEPLOY_PATH}:/srv/duolinzao-staging
+    secrets:
+      - dlz_stg_db_password
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.duolinzao.role==db
+      resources:
+        limits:
+          memory: 192M
+        reservations:
+          memory: 96M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duolinzao"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    image: ghcr.io/moderras/duolinzao:${IMAGE_TAG:-latest}
+    networks:
+      - traefik-public
+      - duolinzao-staging-internal
+    environment:
+      DUOLINZAO_CONFIG: /config/config.toml
+      DLZ_DATABASE_URL_FILE: /run/secrets/dlz_stg_database_url
+      DLZ_SUPER_PASSWORD_FILE: /run/secrets/dlz_stg_super_password
+      DLZ_LOCAL_KEY_FILE: /run/secrets/dlz_stg_local_key
+      DLZ_SMTP_PASSWORD_FILE: /run/secrets/dlz_stg_smtp_password
+      DLZ_WEBAUTHN_RP_ID: ${DLZ_DOMAIN:-example.com}
+      DLZ_WEBAUTHN_ORIGIN: https://${DLZ_DOMAIN:-example.com}
+    configs:
+      - source: duolinzao_staging_config
+        target: /config/config.toml
+    secrets:
+      - dlz_stg_database_url
+      - dlz_stg_super_password
+      - dlz_stg_local_key
+      - dlz_stg_smtp_password
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mkdir -p /srv/duolinzao-staging/images && chown 65534:65534 /srv/duolinzao-staging/images && exec setpriv --reuid=65534 --regid=65534 --clear-groups /app/duolinzao
+    volumes:
+      - ${DEPLOY_PATH}:/srv/duolinzao-staging
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.duolinzao.role==app
+      resources:
+        limits:
+          memory: 192M
+        reservations:
+          memory: 64M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+        monitor: 60s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+        monitor: 60s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.duolinzao-staging.rule=Host(`${DLZ_DOMAIN:-example.com}`)"
+        - "traefik.http.routers.duolinzao-staging.entrypoints=${TRAEFIK_ENTRYPOINT:-web}"
+        - "traefik.http.routers.duolinzao-staging.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+        - "traefik.http.services.duolinzao-staging.loadbalancer.server.port=8080"
+        - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik-public}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
