@@ -1035,6 +1035,10 @@ async fn assign_role(
 struct InviteBody {
     #[serde(default)]
     max_uses: Option<i32>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    canteen_ids: Vec<Uuid>,
 }
 
 async fn create_invite(
@@ -1042,8 +1046,10 @@ async fn create_invite(
     user: CurrentUser,
     body: Option<Json<InviteBody>>,
 ) -> Result<impl IntoResponse, AppError> {
-    let max_uses = body.map(|item| item.max_uses).unwrap_or(None);
-    let created = admin::create_invite(&state, &user, max_uses).await?;
+    let (max_uses, role, canteen_ids) = body
+        .map(|item| (item.0.max_uses, item.0.role.clone(), item.0.canteen_ids.clone()))
+        .unwrap_or((None, None, Vec::new()));
+    let created = admin::create_invite(&state, &user, max_uses, role, canteen_ids).await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 

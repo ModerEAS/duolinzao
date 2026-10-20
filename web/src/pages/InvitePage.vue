@@ -12,12 +12,32 @@ interface Invite {
   max_uses: number;
   used_count: number;
   revoked_at: string | null;
+  role: string;
+  canteen_ids: string[];
+}
+
+interface Canteen {
+  id: string;
+  name: string;
 }
 
 const rows = ref<Invite[]>([]);
+const canteens = ref<Canteen[]>([]);
 const shown = ref<string | null>(null);
 const dialog = ref(false);
 const maxUses = ref(1);
+const role = ref("employee");
+const canteenIds = ref<string[]>([]);
+
+function roleLabel(value: string): string {
+  return value === "canteen" ? "食堂" : "员工";
+}
+
+function scopeLabel(row: Invite): string {
+  if (row.role !== "canteen" || row.canteen_ids.length === 0) return "—";
+  const names = new Map(canteens.value.map((c) => [c.id, c.name]));
+  return row.canteen_ids.map((id) => names.get(id) ?? id.slice(0, 8)).join("、");
+}
 
 function usedLabel(row: Invite): string {
   if (!row.used_by) return "";
@@ -34,8 +54,12 @@ function statusOf(row: Invite): { text: string; color: string } {
 }
 
 async function load() {
-  const body = await api<{ items: Invite[] }>("/api/admin/invites");
-  rows.value = body.items;
+  const [invites, canteenList] = await Promise.all([
+    api<{ items: Invite[] }>("/api/admin/invites"),
+    api<{ items: Canteen[] }>("/api/canteens"),
+  ]);
+  rows.value = invites.items;
+  canteens.value = canteenList.items;
 }
 
 async function create() {
@@ -44,9 +68,17 @@ async function create() {
     ElMessage.error("可使用次数至少为 1");
     return;
   }
+  if (role.value === "canteen" && canteenIds.value.length === 0) {
+    ElMessage.error("食堂邀请码必须选至少一个食堂");
+    return;
+  }
   const body = await api<{ code: string }>("/api/admin/invites", {
     method: "POST",
-    body: JSON.stringify({ max_uses: n }),
+    body: JSON.stringify({
+      max_uses: n,
+      role: role.value,
+      canteen_ids: role.value === "canteen" ? canteenIds.value : [],
+    }),
   });
   shown.value = body.code;
   dialog.value = true;
@@ -101,6 +133,22 @@ onMounted(load);
     <div class="head">
       <h1 class="page-title">邀请码</h1>
       <div class="issue">
+        <el-select v-model="role" style="width: 110px" aria-label="注册角色">
+          <el-option value="employee" label="员工" />
+          <el-option value="canteen" label="食堂" />
+        </el-select>
+        <el-select
+          v-if="role === 'canteen'"
+          v-model="canteenIds"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="选择食堂"
+          style="width: 220px"
+          aria-label="食堂范围"
+        >
+          <el-option v-for="c in canteens" :key="c.id" :value="c.id" :label="c.name" />
+        </el-select>
         <el-input-number v-model="maxUses" :min="1" :precision="0" aria-label="可使用次数" />
         <el-button type="primary" @click="create">发放邀请码</el-button>
       </div>
@@ -111,6 +159,12 @@ onMounted(load);
           <template #default>完整码只在发放时出现一次</template>
         </el-table-column>
         <el-table-column prop="created_at" label="发放时间" />
+        <el-table-column label="角色" width="70">
+          <template #default="{ row }">{{ roleLabel((row as Invite).role) }}</template>
+        </el-table-column>
+        <el-table-column label="范围" min-width="120">
+          <template #default="{ row }">{{ scopeLabel(row as Invite) }}</template>
+        </el-table-column>
         <el-table-column label="已用/上限" width="120">
           <template #default="{ row }">{{ (row as Invite).used_count }}/{{ (row as Invite).max_uses }}</template>
         </el-table-column>

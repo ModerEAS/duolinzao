@@ -2637,6 +2637,198 @@ async fn invite_multi_use() {
 }
 
 #[tokio::test]
+async fn invite_role() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    let super_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("invite-role-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login",
+    )
+    .token();
+
+    let canteen = uid(
+        &must(
+            api.call(
+                "POST",
+                "/api/admin/canteens",
+                Some(&super_token),
+                Some(json!({"name": "邀请食堂"})),
+                None,
+                None,
+            )
+            .await,
+            StatusCode::CREATED,
+            "canteen",
+        )
+        .json(),
+        "id",
+    );
+
+    async fn login(api: &Api, username: &str) -> String {
+        must(
+            api.call(
+                "POST",
+                "/api/session/password",
+                None,
+                Some(json!({"username": username, "password": "password-1"})),
+                Some(username),
+                None,
+            )
+            .await,
+            StatusCode::OK,
+            "login",
+        )
+        .token()
+    }
+
+    // 默认仍是员工码：不传 role 即 employee，注册后只有 employee 身份。
+    let emp_code = must(
+        api.call(
+            "POST",
+            "/api/admin/invites",
+            Some(&super_token),
+            Some(json!({"max_uses": 2})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "employee invite",
+    )
+    .json();
+    assert_eq!(emp_code["role"], "employee");
+    assert_eq!(emp_code["canteen_ids"], json!([]));
+    must(
+        api.call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "role-emp", "invite_code": emp_code["code"], "password": "password-1"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "register employee",
+    );
+    let emp_token = login(&api, "role-emp").await;
+    let me = must(
+        api.call("GET", "/api/me", Some(&emp_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "me employee",
+    )
+    .json();
+    assert_eq!(me["roles"], json!([{"role": "employee", "canteen_ids": [], "source_label": Value::Null}]));
+
+    // 食堂码：注册成 canteen + 范围，并同步写入 canteen_staff。
+    let can_code = must(
+        api.call(
+            "POST",
+            "/api/admin/invites",
+            Some(&super_token),
+            Some(json!({"role": "canteen", "canteen_ids": [canteen]})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "canteen invite",
+    )
+    .json();
+    assert_eq!(can_code["role"], "canteen");
+    must(
+        api.call(
+            "POST",
+            "/api/register",
+            None,
+            Some(json!({"username": "role-can", "invite_code": can_code["code"], "password": "password-1"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::CREATED,
+        "register canteen",
+    );
+    let can_token = login(&api, "role-can").await;
+    let me = must(
+        api.call("GET", "/api/me", Some(&can_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "me canteen",
+    )
+    .json();
+    assert_eq!(
+        me["roles"],
+        json!([{"role": "canteen", "canteen_ids": [canteen.to_string()], "source_label": Value::Null}])
+    );
+    let staff: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM canteen_staff WHERE account_id = (SELECT id FROM account WHERE username = 'role-can') AND canteen_id = $1)",
+    )
+    .bind(canteen)
+    .fetch_one(&api.pool)
+    .await
+    .unwrap();
+    assert!(staff, "食堂邀请注册应同步写入 canteen_staff");
+
+    // 列表展示角色与范围。
+    let listed = must(
+        api.call(
+            "GET",
+            "/api/admin/invites",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "invite list",
+    )
+    .json();
+    let can_row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == can_code["id"])
+        .expect("应有食堂邀请码");
+    assert_eq!(can_row["role"], "canteen");
+    assert_eq!(can_row["canteen_ids"], json!([canteen.to_string()]));
+    assert!(can_row.get("code").is_none());
+
+    // 非法：admin/super_admin 不能经邀请码发；employee 带范围被拒；canteen 空范围被拒；不存在的食堂被拒。
+    for body in [
+        json!({"role": "admin"}),
+        json!({"role": "super_admin"}),
+        json!({"role": "boss"}),
+        json!({"role": "employee", "canteen_ids": [canteen]}),
+        json!({"role": "canteen"}),
+        json!({"role": "canteen", "canteen_ids": [Uuid::new_v4()]}),
+    ] {
+        let bad = api
+            .call(
+                "POST",
+                "/api/admin/invites",
+                Some(&super_token),
+                Some(body),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(bad.status, StatusCode::BAD_REQUEST, "非法邀请应被拒: {}", bad.json());
+    }
+}
+
+#[tokio::test]
 async fn account_settings() {
     let _gate = GATE.lock().await;
     let api = prepare().await;
