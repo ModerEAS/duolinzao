@@ -24,14 +24,18 @@
 #   DEPLOY_PATH：无默认值，部署时必须注入 staging 目录（CI 从 STAGING_DEPLOY_PATH 注入）
 #
 # 用法（manager 上，STAGING 目录内）：IMAGE_TAG=sha-xxx DLZ_DOMAIN=staging.example.com \
-#   docker stack deploy -c stack.staging.yml --with-registry-auth duolinzao-staging
+#   docker stack deploy -c stack.yml --with-registry-auth duolinzao-staging
+# 注意：CI scp 上来的是 stack.staging.yml / config.staging.toml，随即改名为
+# stack.yml / config.toml（与生产同形），所以下面 configs 的 file 写 ./config.toml
+#（compose/swarm 按 stack 文件所在目录解析相对路径）。CONFIG_VERSION 仍按仓库侧
+# deploy/config.staging.toml 的 sha256 前 12 位计算（CI 步骤里），两边内容一致即可。
 # 校验：docker compose -f deploy/stack.staging.yml config（带与不带变量各一次）。
 # 首次准备：docs/deploy.md「测试服」一节。
 
 configs:
   duolinzao_staging_config:
     name: duolinzao_staging_config_${CONFIG_VERSION:-dev}
-    file: ./config.staging.toml
+    file: ./config.toml
 
 secrets:
   dlz_stg_db_password:

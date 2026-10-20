@@ -161,7 +161,7 @@ manager 上仍需手工做两件事：建好 staging 数据目录（各会跑 ap
 
 ### 6.4 部署与验证
 
-每次 master push 全绿后自动：检查配置 → 确保 5 个 `dlz_stg_*` secret（缺才建）→ scp `stack.staging.yml` + `config.staging.toml` → `docker stack deploy ... duolinzao-staging` → 轮询 `duolinzao-staging_app` 收敛 → `curl https://staging 域名/healthz`。生产发布流程不变。
+每次 master push 全绿后自动：检查配置 → 确保 5 个 `dlz_stg_*` secret（缺才建）→ scp `stack.staging.yml` + `config.staging.toml`（随即在远端改名为 `stack.yml` / `config.toml`，与生产同形；stack 文件里的 `file: ./config.toml` 与改名后一致）→ `docker stack deploy ... duolinzao-staging` → 轮询 `duolinzao-staging_app` 收敛 → `curl https://staging 域名/healthz`。生产发布流程不变。
 
 ```bash
 docker stack services duolinzao-staging
