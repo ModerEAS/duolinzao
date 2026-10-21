@@ -2405,6 +2405,77 @@ async fn app_static_no_spa_fallback() {
 }
 
 #[tokio::test]
+async fn app_static_custom_app_dir() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+
+    // staging 姿态：[server] app_dir 指向另一份目录，/app/* 从它直出，
+    // 而 {static_dir}/app 下的文件不再被服务（默认回退只在未配 app_dir 时生效）。
+    let base = std::env::temp_dir().join("duolinzao-phase1-appdir");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("static/app")).unwrap();
+    std::fs::create_dir_all(base.join("custom")).unwrap();
+    std::fs::write(base.join("static/app/version.json"), r#"{"versionCode":1}"#).unwrap();
+    std::fs::write(
+        base.join("custom/version.json"),
+        r#"{"versionCode":7,"versionName":"0.1.5","url":"/app/duolinzao.apk","sha256":"abc"}"#,
+    )
+    .unwrap();
+    let raw_cfg = example_config().replace(
+        "[server]",
+        &format!(
+            "[server]\nstatic_dir = \"{}\"\napp_dir = \"{}\"",
+            base.join("static").to_str().unwrap(),
+            base.join("custom").to_str().unwrap()
+        ),
+    );
+    let config = AppConfig::parse(&raw_cfg).unwrap();
+    let state = AppState::new(
+        api.pool.clone(),
+        config,
+        Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).single().unwrap(),
+        )),
+        api.mailer.clone(),
+        Arc::new(api.scripts.clone()),
+    )
+    .unwrap();
+    let app = router(state);
+    let request = Request::builder()
+        .method("GET")
+        .uri("/app/version.json")
+        .header("user-agent", "phase1-test")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK, "自定义 app_dir 应直出");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["versionCode"], 7, "应为 custom 目录的包，{body}");
+
+    // 逃逸在自定义目录下同样 404。
+    let state2 = AppState::new(
+        api.pool.clone(),
+        AppConfig::parse(&raw_cfg).unwrap(),
+        Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).single().unwrap(),
+        )),
+        api.mailer.clone(),
+        Arc::new(api.scripts.clone()),
+    )
+    .unwrap();
+    let app2 = router(state2);
+    let request = Request::builder()
+        .method("GET")
+        .uri("/app/../secret")
+        .header("user-agent", "phase1-test")
+        .body(Body::empty())
+        .unwrap();
+    let response = app2.oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "逃逸应 404");
+}
+
+#[tokio::test]
 async fn security_hardening_round2() {
     let _gate = GATE.lock().await;
     let api = prepare().await;

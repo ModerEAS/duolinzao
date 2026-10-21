@@ -211,8 +211,9 @@ async fn healthz() -> &'static str {
 }
 
 /// 站点自托管 `/app/`（通用 APK 与 version.json，供应用内更新同源拉取）。
-/// 文件来自 `{static_dir}/app/`；缺文件、未配目录或路径逃逸一律 404 JSON，
-/// 绝不回退 index.html（否则 App 会把 HTML 当 version.json 解析失败）。
+/// 文件来自 `app_dir`（`[server] app_dir` 或 `DLZ_APP_DIR`，缺省 `{static_dir}/app/`）；
+/// 缺文件、未配目录或路径逃逸一律 404 JSON，绝不回退 index.html
+/// （否则 App 会把 HTML 当 version.json 解析失败）。
 async fn serve_app_file(
     State(state): State<AppState>,
     Path(path): Path<String>,
@@ -224,13 +225,13 @@ async fn serve_app_file(
         )
             .into_response()
     };
-    let Some(dir) = state.config.static_dir.clone() else {
+    let Some(dir) = state.config.resolved_app_dir() else {
         return not_found();
     };
     if path.contains("..") || path.contains('\\') || path.starts_with('/') {
         return not_found();
     }
-    let full = format!("{dir}/app/{path}");
+    let full = format!("{dir}/{path}");
     let bytes = match tokio::fs::read(&full).await {
         Ok(item) => item,
         Err(_) => return not_found(),

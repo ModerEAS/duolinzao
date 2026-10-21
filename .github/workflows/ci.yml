@@ -186,10 +186,124 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  android-apk:
+    name: 构建 Android APK（prod/staging 各一份）
+    runs-on: ubuntu-latest
+    outputs:
+      has_apk: ${{ steps.pack.outputs.has_apk }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # versionCode 用 git rev-list --count HEAD，必须完整历史。
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 安装 SDK 包
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+      - name: 算版本（versionName=Gitea 串，versionCode=提交计数单调递增）
+        id: ver
+        run: |
+          set -euo pipefail
+          VER="$(bash scripts/ci-version.sh)"
+          CODE="$(git rev-list --count HEAD)"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "code=${CODE}" >> "$GITHUB_OUTPUT"
+          echo "APK 版本：${VER}（${CODE}）"
+      - name: assembleRelease（通用包）
+        working-directory: clients/android
+        run: ./gradlew :app:assembleRelease -PdlzVersionCode='${{ steps.ver.outputs.code }}' -PdlzVersionName='${{ steps.ver.outputs.version }}' --stacktrace
+      - name: 准备签名 keystore（正式 / 一次性）
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/site.jks"
+            echo "mode=release" >> "$GITHUB_OUTPUT"
+            echo "keystore=$RUNNER_TEMP/site.jks" >> "$GITHUB_OUTPUT"
+            echo "用正式 keystore 签名"
+          else
+            # PR/fork 只有这条路：一次性 keystore，只验证流程。
+            # master/v* 走到这里由 pack 步直接跳过（不放包），见下。
+            keytool -genkeypair -keystore "$RUNNER_TEMP/ephemeral.jks" \
+              -storepass ephemeral -keypass ephemeral -alias ephemeral \
+              -keyalg RSA -keysize 2048 -validity 30 \
+              -dname "CN=duolinzao-ephemeral" > /dev/null
+            echo "::warning::未配 ANDROID_KEYSTORE_BASE64/ANDROID_KEYSTORE_PASSWORD，用一次性 keystore 签名（仅供验证流程，装机后不可升级）"
+            echo "mode=ephemeral" >> "$GITHUB_OUTPUT"
+            echo "keystore=$RUNNER_TEMP/ephemeral.jks" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 按环境改包（prod/staging）并生成 version.json
+        id: pack
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PROD_DOMAIN: ${{ vars.DLZ_DOMAIN }}
+          STAGING_DOMAIN: ${{ vars.STAGING_DLZ_DOMAIN }}
+          GIT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          UNIVERSAL="clients/android/app/build/outputs/apk/release/app-release.apk"
+          MODE="${{ steps.keystore.outputs.mode }}"
+          if [ "$MODE" = release ]; then
+            export KEYSTORE="${{ steps.keystore.outputs.keystore }}"
+            export KEYSTORE_PASS="$KEYSTORE_PASSWORD"
+            export KEY_ALIAS="$KEY_ALIAS"
+            export KEY_PASS="$KEY_PASSWORD"
+            export SIGNING=release
+          else
+            # 同一镜像服务两个域名，包内 baseUrl 写死：master/v* 没有正式 keystore
+            # 时不放包，否则一次性 key 每次不同，已装设备永远装不上更新。
+            if [ "$GIT_REF" = refs/heads/master ] || [[ "$GIT_REF" == refs/tags/v* ]]; then
+              echo "::warning::master/v* 构建但未配正式 keystore，不把 APK 放进镜像（/app 保持 404，App 显示不可用）"
+              echo "has_apk=false" >> "$GITHUB_OUTPUT"
+              rm -f "$RUNNER_TEMP"/*.jks
+              exit 0
+            fi
+            export KEYSTORE="${{ steps.keystore.outputs.keystore }}"
+            export KEYSTORE_PASS=ephemeral KEY_ALIAS=ephemeral KEY_PASS=ephemeral
+            export SIGNING=ephemeral
+          fi
+          PROD_URL="https://${PROD_DOMAIN:-}"
+          if [ -z "${PROD_DOMAIN:-}" ]; then
+            echo "::notice::仓库级 var DLZ_DOMAIN 未设，prod 包用 https://example.com 占位"
+            PROD_URL="https://example.com"
+          fi
+          STAGING_URL="https://${STAGING_DOMAIN:-}"
+          if [ -z "${STAGING_DOMAIN:-}" ]; then
+            echo "::notice::仓库级 var STAGING_DLZ_DOMAIN 未设，staging 包用 https://example.com 占位"
+            STAGING_URL="https://example.com"
+          fi
+          rm -rf app-bundle && mkdir -p app-bundle/prod app-bundle/staging
+          bash clients/android/scripts/inject-server-url.sh "$PROD_URL" "$UNIVERSAL" app-bundle/prod/duolinzao.apk
+          bash clients/android/scripts/inject-server-url.sh "$STAGING_URL" "$UNIVERSAL" app-bundle/staging/duolinzao.apk
+          rm -f "$RUNNER_TEMP"/*.jks
+          ls -la app-bundle/prod app-bundle/staging
+          echo "has_apk=true" >> "$GITHUB_OUTPUT"
+      - name: 上传产物（供 image job 打进镜像）
+        if: steps.pack.outputs.has_apk == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-bundle
+          path: app-bundle/
+          retention-days: 7
+
   image:
     name: 构建镜像（仅 master / v* 推 GHCR）
     runs-on: ubuntu-latest
-    needs: [test, e2e]
+    needs: [test, e2e, android-apk]
     permissions:
       contents: read
       packages: write
@@ -198,6 +312,12 @@ jobs:
         with:
           # 页脚版本要跑 `git describe`，必须拿到完整历史与 tag。
           fetch-depth: 0
+      - name: 取 APK 产物（无包则目录留空，/app 保持 404）
+        if: needs.android-apk.outputs.has_apk == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: app-bundle
+          path: deploy/app-bundle
       - uses: docker/setup-buildx-action@v3
       - name: 校验 docker compose 可解析
         run: |
@@ -227,22 +347,10 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          CARGO_VER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-          RAW=$(git describe --tags --always 2>/dev/null || true)
-          if [ -z "$RAW" ]; then
-            VER="${CARGO_VER}+unknown"
-          elif [[ "$RAW" == *-* ]]; then
-            VER="${RAW/-/+}"
-            VER="${VER#v}"
-          elif [[ "$RAW" == v* ]]; then
-            VER="${RAW#v}"
-          elif [ "$RAW" = "$CARGO_VER" ]; then
-            VER="$RAW"
-          else
-            VER="${CARGO_VER}+0-g${RAW}"
-          fi
+          # 与 android-apk job 同算法（scripts/ci-version.sh），避免两处漂移。
+          VER="$(bash scripts/ci-version.sh)"
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
-          echo "页脚版本：${VER}（raw=${RAW:-empty} cargo=${CARGO_VER}）"
+          echo "页脚版本：${VER}（算法见 scripts/ci-version.sh，与 android-apk job 同一份）"
       - name: build（PR 只 build；master / v* 才 push）
         uses: docker/build-push-action@v6
         with:
@@ -255,6 +363,32 @@ jobs:
             GITHUB_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: 冒烟：APK 与 version.json 随镜像直出
+        run: |
+          set -euo pipefail
+          # 与上一步同上下文再 build 一次 --load（复用 gha cache，不重编后端），
+          # 只为把镜像拉到本地验证；PR 照样跑。
+          docker buildx build --load -t dlz-apk-smoke:ci \
+            --build-arg DLZ_VERSION='${{ steps.ver.outputs.version }}' \
+            --build-arg GITHUB_SHA='${{ github.sha }}' \
+            --cache-from type=gha \
+            .
+          if [ '${{ needs.android-apk.outputs.has_apk }}' = 'true' ]; then
+            docker run --rm --entrypoint /bin/sh dlz-apk-smoke:ci -c 'ls -la /app/static/app/ /app/static/app-staging/'
+            docker run --rm --entrypoint /bin/sh dlz-apk-smoke:ci -c 'cat /app/static/app/version.json' | tee /tmp/version.json
+            jq -e '.versionCode > 0 and (.sha256 | length == 64) and (.url | startswith("/app/"))' /tmp/version.json
+            SHA_JSON="$(jq -r .sha256 /tmp/version.json)"
+            SHA_APK="$(docker run --rm --entrypoint sha256sum dlz-apk-smoke:ci /app/static/app/duolinzao.apk | cut -d' ' -f1)"
+            [ "$SHA_JSON" = "$SHA_APK" ] || { echo "sha 不一致：json=$SHA_JSON apk=$SHA_APK"; exit 1; }
+            # staging 份至少自洽（version.json 合法、包存在）。
+            docker run --rm --entrypoint /bin/sh dlz-apk-smoke:ci -c 'cat /app/static/app-staging/version.json' | \
+              jq -e '.versionCode > 0 and (.sha256 | length == 64) and (.url | startswith("/app/"))'
+            docker run --rm --entrypoint /bin/sh dlz-apk-smoke:ci -c 'test -s /app/static/app-staging/duolinzao.apk && echo STAGING_APK_OK'
+            echo "APK 冒烟通过"
+          else
+            docker run --rm --entrypoint /bin/sh dlz-apk-smoke:ci -c \
+              'test ! -e /app/static/app/version.json && test ! -e /app/static/app-staging/version.json && echo "无包分支：/app 为空并跳过（404 语义保持）"'
+          fi
 
   deploy:
     name: 部署到 Swarm（production）

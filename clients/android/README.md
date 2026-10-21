@@ -17,8 +17,12 @@ cd clients/android
 ./gradlew :app:assembleRelease      # 通用包底版（未签名，部署前走 inject 脚本重签）
 ```
 
-产物：`app/build/outputs/apk/{debug,release}/app-*.apk`。`versionCode=1` / `versionName=0.1.2`
-与仓库基线（Cargo `0.1.2`）对齐；inject 脚本原样沿用这两个值，部署方不覆盖。
+产物：`app/build/outputs/apk/{debug,release}/app-*.apk`。版本号平时不用管：
+CI 自动注入（`versionName` = Gitea 风格串 `scripts/ci-version.sh`，
+`versionCode` = `git rev-list --count HEAD` 单调递增）；本地不传 Gradle 属性时
+默认 `versionCode=1` / `versionName=0.1.2`。inject 脚本原样沿用构建值，部署方不覆盖。
+`version.json` 另带 `signing` 标注（`release` 正式 keystore / `ephemeral` CI 一次性 /
+`unsigned` 未签名），App 端只做展示，不参与更新判断。
 
 ## 运行（模拟器 / 真机）
 

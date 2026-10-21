@@ -57,6 +57,9 @@ pub struct AppConfig {
     pub cookie_secure: bool,
     pub trust_proxy: bool,
     pub static_dir: Option<String>,
+    /// `/app/*` 直出的 APK 目录。缺省为 `{static_dir}/app`（生产即此）；
+    /// staging 经 `DLZ_APP_DIR` 指向镜像里另一份（如 `/app/static/app-staging`）。
+    pub app_dir: Option<String>,
 }
 
 impl AppConfig {
@@ -204,6 +207,7 @@ impl AppConfig {
         // （如 Traefik）剥掉一层并设置 X-Forwarded-For 时才配 true。
         let trust_proxy = optional_bool(server, "trust_proxy").unwrap_or(false);
         let static_dir = optional_string(server, "static_dir").filter(|s| !s.is_empty());
+        let app_dir = optional_string(server, "app_dir").filter(|s| !s.is_empty());
 
         Ok(Self {
             super_username: super_username.unwrap(),
@@ -232,7 +236,17 @@ impl AppConfig {
             cookie_secure,
             trust_proxy,
             static_dir,
+            app_dir,
         })
+    }
+
+    /// `/app/*` 的实际目录：显式配了 `[server] app_dir`（或 `DLZ_APP_DIR`）就用它，
+    /// 否则回退 `{static_dir}/app`；都没配则无目录（路由返回 404）。
+    pub fn resolved_app_dir(&self) -> Option<String> {
+        if let Some(dir) = self.app_dir.clone().filter(|s| !s.is_empty()) {
+            return Some(dir);
+        }
+        self.static_dir.clone().map(|dir| format!("{dir}/app"))
     }
 }
 
@@ -243,7 +257,8 @@ fn apply_env_overrides(
     value: &mut Value,
     get: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
-    const RULES: [(&[&str], &str); 7] = [
+    const RULES: [(&[&str], &str); 8] = [
+        (&["server", "app_dir"], "DLZ_APP_DIR"),
         (&["email", "delivery"], "DLZ_EMAIL_DELIVERY"),
         (&["database", "url"], "DLZ_DATABASE_URL"),
         (&["super_admin", "password"], "DLZ_SUPER_PASSWORD"),
@@ -536,6 +551,41 @@ mod tests {
         let raw = example_config();
         let config = AppConfig::parse(&raw).expect("显式 false");
         assert!(!config.cookie_secure);
+    }
+
+    #[test]
+    fn app_dir_defaults_to_static_subdir_and_env_overrides() {
+        // 缺省：未配 app_dir 时回退 {static_dir}/app（生产行为不变）。
+        let raw = example_config().replace(
+            "[server]",
+            "[server]\nstatic_dir = \"/app/static\"",
+        );
+        let config = AppConfig::parse(&raw).expect("缺省 app_dir");
+        assert_eq!(config.app_dir, None);
+        assert_eq!(
+            config.resolved_app_dir().as_deref(),
+            Some("/app/static/app")
+        );
+        // TOML 显式 app_dir 优先于缺省。
+        let raw = example_config().replace(
+            "[server]",
+            "[server]\nstatic_dir = \"/app/static\"\napp_dir = \"/app/static/app-staging\"",
+        );
+        let config = AppConfig::parse(&raw).expect("显式 app_dir");
+        assert_eq!(
+            config.resolved_app_dir().as_deref(),
+            Some("/app/static/app-staging")
+        );
+        // DLZ_APP_DIR 环境覆盖（staging 经 stack 注入）。
+        let env = env_map(&[("DLZ_APP_DIR", " /srv/app-dir ")]);
+        let config =
+            AppConfig::parse_with_env(&example_config(), &|k| env.get(k).cloned())
+                .expect("env 覆盖");
+        assert_eq!(config.app_dir.as_deref(), Some("/srv/app-dir"));
+        assert_eq!(config.resolved_app_dir().as_deref(), Some("/srv/app-dir"));
+        // 都没配：无目录（路由返回 404）。
+        let config = AppConfig::parse(&example_config()).expect("无静态目录");
+        assert_eq!(config.resolved_app_dir(), None);
     }
 
     #[test]

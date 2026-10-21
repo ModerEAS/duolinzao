@@ -106,6 +106,10 @@ services:
       DLZ_SMTP_PASSWORD_FILE: /run/secrets/dlz_stg_smtp_password
       DLZ_WEBAUTHN_RP_ID: ${DLZ_DOMAIN:-example.com}
       DLZ_WEBAUTHN_ORIGIN: https://${DLZ_DOMAIN:-example.com}
+      # 同一镜像服务两个域名：APK 的 baseUrl 写死在包内，staging 必须用自己的包。
+      # 镜像里 prod 份在 /app/static/app/、staging 份在 /app/static/app-staging/，
+      # 这里把 staging 的 /app/* 路由指向 staging 份；生产不动（默认即 prod 份）。
+      DLZ_APP_DIR: /app/static/app-staging
     configs:
       - source: duolinzao_staging_config
         target: /config/config.toml

@@ -29,6 +29,11 @@ WORKDIR /app
 COPY LICENSE /app/LICENSE
 COPY --from=rust /src/target/release/duolinzao /app/duolinzao
 COPY --from=web /src/web/dist /app/static
+# CI 由 android-apk job 填充（deploy/app-bundle/，本地构建时只有 .gitkeep，
+# 拷空壳也成功；staging 份走 DLZ_APP_DIR 指向 app-staging，见 deploy/stack.staging.yml）。
+COPY deploy/app-bundle/prod/ /app/static/app/
+COPY deploy/app-bundle/staging/ /app/static/app-staging/
+RUN rm -f /app/static/app/.gitkeep /app/static/app-staging/.gitkeep
 # 镜像以 nobody 运行：先把餐品图片目录建好并交给它，命名卷才会继承属主。
 RUN mkdir -p /var/lib/duolinzao/images && chown -R 65534:65534 /var/lib/duolinzao
 ENV DUOLINZAO_CONFIG=/config/config.toml

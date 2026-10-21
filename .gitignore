@@ -14,6 +14,15 @@ clients/android/local.properties
 clients/android/.gradle/
 clients/android/**/build/
 clients/android/.idea/
+
+# CI android-apk job 的本地验证副产物（仓库根 app-bundle/，勿提交）
+/app-bundle/
+
+# CI 填充的 APK 产物（android-apk job → image job；本地构建目录为空也必须成功）
+deploy/app-bundle/prod/*.apk
+deploy/app-bundle/prod/version.json
+deploy/app-bundle/staging/*.apk
+deploy/app-bundle/staging/version.json
 /e2e/app.log
 /e2e/playwright-report
 /e2e/test-results

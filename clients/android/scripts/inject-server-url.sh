@@ -3,6 +3,8 @@
 # 用法：scripts/inject-server-url.sh https://app.example.com /path/to/duolinzao.apk [out.apk]
 # 产物：out.apk + 同目录 version.json（versionCode/versionName 从通用 APK 原样读取，不覆盖）。
 # 密钥不进 git；签名用部署方自己的 keystore。
+# version.json 另带 "signing" 标注（release/ephemeral/unsigned，可经 SIGNING 覆盖；
+# App 端 ignoreUnknownKeys，只做标注，不影响更新判断）。
 set -euo pipefail
 
 if [ $# -lt 2 ]; then
@@ -112,11 +114,14 @@ fi
 # version.json：版本号沿用通用 APK 原值，url 同站，sha256 为最终 APK 摘要。
 SHA="$("$SHA" "$OUT_DIR/$OUT_BASE" | cut -d' ' -f1)"
 URL_PATH="/app/$OUT_BASE"
-"$PY" - "$(to_tool_path "$OUT_DIR/version.json")" "$VER_CODE" "$VER_NAME" "$URL_PATH" "$SHA" <<'EOF'
+if [ -z "${SIGNING:-}" ]; then
+  if [ -n "${KEYSTORE:-}" ]; then SIGNING="release"; else SIGNING="unsigned"; fi
+fi
+"$PY" - "$(to_tool_path "$OUT_DIR/version.json")" "$VER_CODE" "$VER_NAME" "$URL_PATH" "$SHA" "$SIGNING" <<'EOF'
 import json, sys
-out, code, name, url, sha = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+out, code, name, url, sha, signing = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 with open(out, "w", encoding="utf-8") as f:
-    json.dump({"versionCode": code, "versionName": name, "url": url, "sha256": sha}, f, ensure_ascii=False, indent=2)
+    json.dump({"versionCode": code, "versionName": name, "url": url, "sha256": sha, "signing": signing}, f, ensure_ascii=False, indent=2)
     f.write("\n")
 EOF
 echo "已写 $OUT_DIR/$OUT_BASE"
