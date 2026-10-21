@@ -2476,6 +2476,106 @@ async fn app_static_custom_app_dir() {
 }
 
 #[tokio::test]
+async fn app_signing_keystore_in_db() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    let super_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("signing-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login",
+    )
+    .token();
+
+    // 未配置：状态为未配置；此时签名发布应明确报未配置（不碰 apksigner）。
+    let status = must(
+        api.call("GET", "/api/admin/app-signing", Some(&super_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "signing status",
+    )
+    .json();
+    assert_eq!(status["configured"], false, "{status}");
+    let denied = must(
+        api.call("POST", "/api/admin/app-signing/sign", Some(&super_token), None, None, None)
+            .await,
+        StatusCode::BAD_REQUEST,
+        "sign without keystore",
+    )
+    .json();
+    assert_eq!(denied["error"], "signing_not_configured", "{denied}");
+
+    // 普通员工：连状态都看不到。
+    let (emp_token, _) = register_user(&api, &super_token, "emp-signing").await;
+    must(
+        api.call("GET", "/api/admin/app-signing", Some(&emp_token), None, None, None)
+            .await,
+        StatusCode::FORBIDDEN,
+        "employee forbidden",
+    );
+
+    // 超管上传 keystore：multipart（文件 + 密码/别名）；响应只回显别名与指纹。
+    let boundary = "signingboundary";
+    let mut payload = Vec::new();
+    let mut part = |name: &str, filename: Option<&str>, ctype: &str, data: &[u8]| {
+        payload.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
+                .as_bytes(),
+        );
+        if let Some(file) = filename {
+            payload.extend_from_slice(format!("; filename=\"{file}\"").as_bytes());
+        }
+        payload.extend_from_slice(format!("\r\nContent-Type: {ctype}\r\n\r\n").as_bytes());
+        payload.extend_from_slice(data);
+        payload.extend_from_slice(b"\r\n");
+    };
+    part("keystore", Some("site.jks"), "application/octet-stream", b"fake-jks-bytes");
+    part("keystore_password", None, "text/plain", b"ks-pass-1");
+    part("key_alias", None, "text/plain", b"test-key");
+    part("key_password", None, "text/plain", b"key-pass-1");
+    payload.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    let request = Request::builder()
+        .method("PUT")
+        .uri("/api/admin/app-signing")
+        .header("x-dlz-requested", "1")
+        .header("cookie", format!("dlz_session={super_token}"))
+        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(payload))
+        .unwrap();
+    let response = api.app.clone().oneshot(request).await.expect("upload");
+    assert_eq!(response.status(), StatusCode::OK, "上传应成功");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let saved: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(saved["configured"], true, "{saved}");
+    assert_eq!(saved["key_alias"], "test-key", "{saved}");
+    let fingerprint = saved["keystore_sha256"].as_str().unwrap_or_default().to_string();
+    assert_eq!(fingerprint.len(), 64, "指纹应为 sha256 hex，{saved}");
+    // 密码与 keystore 本体永不出现在响应里。
+    for key in ["keystore", "keystore_password", "key_password", "key_ciphertext"] {
+        assert!(saved.get(key).is_none(), "响应不得含 {key}，{saved}");
+    }
+
+    // 状态页回显一致，且密码同样不可见。
+    let status = must(
+        api.call("GET", "/api/admin/app-signing", Some(&super_token), None, None, None)
+            .await,
+        StatusCode::OK,
+        "signing status after put",
+    )
+    .json();
+    assert_eq!(status["configured"], true, "{status}");
+    assert_eq!(status["key_alias"], "test-key", "{status}");
+    assert_eq!(status["keystore_sha256"], fingerprint.as_str(), "{status}");
+}
+
+#[tokio::test]
 async fn security_hardening_round2() {
     let _gate = GATE.lock().await;
     let api = prepare().await;

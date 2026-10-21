@@ -137,6 +137,9 @@ pub fn router(state: AppState) -> Router {
             "/api/admin/llm-channels",
             get(get_channels).put(put_channels),
         )
+        // 应用签名：keystore 只活在数据库，由超管上传；正式签名在服务端完成。
+        .route("/api/admin/app-signing", get(get_app_signing).put(put_app_signing))
+        .route("/api/admin/app-signing/sign", post(sign_app_release))
         .route("/api/admin/recovery", post(recover))
         .route("/api/admin/accounts", get(accounts))
         .route("/api/admin/audit", get(audit))
@@ -1276,6 +1279,84 @@ struct RecoverBody {
     username: String,
     action: String,
     password: Option<String>,
+}
+
+async fn get_app_signing(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(crate::ops::app_signing::status(&state, &user).await?))
+}
+
+async fn put_app_signing(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, AppError> {
+    let mut keystore = None;
+    let mut keystore_password = None;
+    let mut key_alias = None;
+    let mut key_password = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::bad("signing_field_invalid", "无法读取上传"))?
+    {
+        match field.name() {
+            Some("keystore") => {
+                keystore = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|_| AppError::bad("signing_field_invalid", "无法读取上传"))?,
+                )
+            }
+            Some("keystore_password") => {
+                keystore_password = Some(field.text().await.map_err(|_| {
+                    AppError::bad("signing_field_invalid", "无法读取上传")
+                })?)
+            }
+            Some("key_alias") => {
+                key_alias = Some(field.text().await.map_err(|_| {
+                    AppError::bad("signing_field_invalid", "无法读取上传")
+                })?)
+            }
+            Some("key_password") => {
+                key_password = Some(field.text().await.map_err(|_| {
+                    AppError::bad("signing_field_invalid", "无法读取上传")
+                })?)
+            }
+            _ => {}
+        }
+    }
+    let (Some(keystore), Some(keystore_password), Some(key_alias), Some(key_password)) =
+        (keystore, keystore_password, key_alias, key_password)
+    else {
+        return Err(AppError::bad(
+            "signing_field_required",
+            "需要 keystore 文件、keystore 密码、别名、key 密码",
+        ));
+    };
+    Ok(Json(
+        crate::ops::app_signing::put_keystore(
+            &state,
+            &user,
+            &keystore,
+            &keystore_password,
+            &key_alias,
+            &key_password,
+        )
+        .await?,
+    ))
+}
+
+async fn sign_app_release(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(
+        crate::ops::app_signing::sign_release(&state, &user).await?,
+    ))
 }
 
 async fn recover(

@@ -197,10 +197,15 @@ rm -rf <STAGING_DEPLOY_PATH>/pgdata <STAGING_DEPLOY_PATH>/images
 
 ## 7. Android APK 自动发布（站点 `/app/*` 直出最新包）
 
-每次 CI（PR 照跑）`android-apk` job 自动：通用包 → 按域名各出一份 →
-打进服务端镜像 → `/app/*` 直出。App 只拉**当前 baseUrl 同源**的
-`/app/version.json`（`versionCode` 更大才提示，`url` 必须同源，校验 `sha256`），
-服务端缺文件返回真 404（App 显示“不可用”，不推坏包）。
+模型：CI 只构建**未签名**通用包（按域名各出一份）打进镜像；**正式签名在服务端完成**，
+签名材料（keystore + 密码 + 别名）只活在**应用数据库**（`app_signing` 单例行，
+经 `local_key` AES-GCM 加密），由超管在「应用签名」页上传/替换、点「签名发布」。
+密钥不进 git、不进 GitHub Secrets、不进部署机文件。
+
+每次 CI（PR 照跑）`android-apk` job 自动：未签通用包 → 按域名各出一份 →
+打进服务端镜像 → `/app/*` 直出（此时是未签包 + `"signing":"unsigned"` 的临时
+`version.json`）。App 只拉**当前 baseUrl 同源**的 `/app/version.json`
+（`versionCode` 更大才提示，`url` 必须同源，校验 `sha256`），服务端缺文件返回真 404。
 
 ### 7.1 为什么一份镜像要装两份包
 
@@ -219,68 +224,44 @@ APK 的 `baseUrl` 写死在包内，且更新器要求同源；生产和测试�
 
 - `versionName` = Gitea 风格串（`scripts/ci-version.sh`，与页脚版本同算法；
   `image` job 与 `android-apk` job 共用这一份，避免两处漂移）。
-- `versionCode` = `git rev-list --count HEAD`（单调递增，保证每次构建都比上次大）。
+- `versionCode` = `git rev-list --count HEAD`（单调递增，保证每次构建都比上大）。
 - CI 经 Gradle 属性传入（`-PdlzVersionCode=` / `-PdlzVersionName=`）；
   本地不传保留默认值（`1` / `0.1.2`），本地构建不破。
 
-### 7.3 GitHub 侧要配的东西（没配也能跑，但包是占位/缺席）
+### 7.3 超管一次性准备（两环境各做一次）
 
-仓库 **Settings → Secrets and variables → Actions**（注意是**仓库级**，
-`android-apk` job 不声明 environment，读不到 environment 级的值）：
-
-**Variables（仓库级）**：
-
-| 名称 | 示例 | 说明 |
-|---|---|---|
-| `DLZ_DOMAIN` | `example.com` | 生产域名，写进 prod 包的 baseUrl（deploy 生产 job 里的同名 environment var 优先级更高，互不冲突） |
-| `STAGING_DLZ_DOMAIN` | `staging.example.com` | 测试服域名，写进 staging 包的 baseUrl |
-
-任一为空时对应包用 `https://example.com` 占位并打 `notice`（baseUrl 指错站
-的包发下去也装不上更新，所以域名配对前不要外发）。
-
-**Secrets（仓库级，4 个，全缺也行，有就全有）**：
-
-| 名称 | 说明 |
-|---|---|
-| `ANDROID_KEYSTORE_BASE64` | 正式 keystore 的 base64（`base64 -w0` 转码，无换行） |
-| `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
-| `ANDROID_KEY_ALIAS` | key 别名 |
-| `ANDROID_KEY_PASSWORD` | key 密码 |
-
-生成（**占位值，换成自己的**；keystore 文件**绝不进仓库**）：
+1. 本地生成长期 keystore（**占位值，换成自己的**；jks 文件**绝不进仓库、绝不进 GitHub**，
+   生成后只留离线备份，见 7.4）：
 
 ```bash
 keytool -genkeypair -keystore site.jks -storepass '<强随机密码>' -keypass '<强随机密码>' \
   -alias duolinzao -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=example.com"
-base64 -w0 site.jks  # 输出贴进 ANDROID_KEYSTORE_BASE64
-# 用完把 site.jks 删了，只留离线备份（见 7.4）
 ```
 
-没配 keystore 时的行为：
+2. 用超管账号登录站点 → 「应用签名」页 → 选择 jks 文件、填三个值 → 「保存到数据库」。
+   页面只回显别名与 keystore 指纹（sha256），密码永不回显、不进审计、不出现在任何列表响应。
+3. 点「签名发布」：服务端用库里 keystore 给当前镜像里的包签名（`apksigner`，镜像自带），
+   重算 sha256 并写出正式 `version.json`（`"signing":"release"`）。
+4. 验证：`curl -fsS https://example.com/app/version.json | jq .`
+   （把域名换成自己的；期望 `signing` 为 `release`）。
+5. **每次部署新镜像后都要再点一次「签名发布」**（镜像更新会重置 `/app/*` 为未签包）。
 
-- PR/fork 构建：CI 现生成一次性 keystore 签名（打 `warning`），`version.json`
-  标 `"signing":"ephemeral"`，只验证流程能通。
-- **master / v\* 构建：不把 APK 放进镜像**（打 `warning`），`/app` 为空、
-  `version.json` 保持 404。因为一次性 key 每次都不同，已装设备永远装不上更新，
-  不如不推。
+staging 与 production 各有自己的数据库 → 各存各的 keystore。
+若希望测试机上 staging 包能覆盖安装生产包（同包名升级不卸载），两环境上传**同一把**
+keystore；否则分开，文档在此写清，超管自己选。
 
-### 7.4 keystore 一旦启用就不能换
+DB 尚未配置 keystore 时：staging/CI 保持绿（`/app/*` 是 CI 未签包，App 下载后因无签名
+丢弃更新，不崩）；生产首次必须先做上面第 2–3 步再对外发包。
 
-**换 keystore = 已装设备无法更新，必须卸载重装**（Android 签名机制，签名指纹
-尽力比对失败即丢弃更新）。所以：正式 keystore 建好后**离线备份**（至少两处，
-如加密 U 盘 + 密码管理器附件），密码同样备份；丢了只能让所有人重装。
+### 7.4 keystore 一旦启用不能换
 
-### 7.5 首次装包与验证
+**换 keystore = 已装设备无法更新，必须卸载重装**（Android 签名机制，签名指纹比对失败
+即丢弃更新）。所以：keystore 建好后**离线备份**（至少两处，如加密 U 盘 + 密码管理器附件），
+密码同样备份；**数据库备份即包含签名密钥，备份必须同等保护**；丢了只能让所有人重装。
+
+### 7.5 首次装包
 
 - 生产手机浏览器打开 `https://example.com/app/duolinzao.apk`（把域名换成自己的）
   下载安装；之后 App 内「检查更新」会自动提示。
-- 服务端验证（任一域名）：
-
-```bash
-curl -fsS https://example.com/app/version.json | jq .
-# 期望：{"versionCode": <构建计数>, "versionName": "<Gitea 串>", "url": "/app/duolinzao.apk",
-#        "sha256": "<64 位>", "signing": "release"}
-```
-
-- 镜像体积：两份 APK 都是 MB 级（具体数字见 PR 描述），可接受；
-  **没开 R8/混淆**（会改 App 行为），除非确认安全才考虑。
+- 镜像体积：两份 APK 都是 MB 级（具体数字见 PR 描述），加上 JRE + build-tools
+ （服务端签名用，约数百 MB）；**没开 R8/混淆**（会改 App 行为），除非确认安全才考虑。
