@@ -132,9 +132,9 @@ services:
       update_config:
         parallelism: 1
         delay: 10s
-        order: start-first
+        order: stop-first
         failure_action: rollback
-        monitor: 60s
+        monitor: 90s
         max_failure_ratio: 0
       rollback_config:
         parallelism: 1
@@ -152,4 +152,5 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 30s
+      start_period: 45s
+
