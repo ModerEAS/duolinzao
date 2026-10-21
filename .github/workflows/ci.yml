@@ -201,11 +201,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
       - name: 安装 SDK 包
         run: |
           set -euo pipefail
+          # runner 预装 cmdline-tools（同 android.yml 的做法，不用 setup-android action：
+          # 它默认装已下架的 tools 包会炸）。ANDROID_HOME 由 runner 环境提供。
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
           yes | "$SDKMANAGER" --licenses > /dev/null
