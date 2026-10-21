@@ -9,7 +9,7 @@
 #   Traefik router/service：duolinzao-staging（Host 用 staging 域名，不与生产冲突）
 #   db：独立 Postgres，自带 192M limit / 96M reservation，
 #       shared_buffers=32MB，max_connections=20（两台 2G 节点的内存余量）
-#   app：192M limit / 64M reservation
+#   app：256M limit / 128M reservation（与生产一致；stop-first 更新无双份峰值）
 #   数据目录：STAGING_DEPLOY_PATH（不得与生产 DEPLOY_PATH 相同，见 docs/deploy.md）
 #   secrets：独立一套 dlz_stg_*（external，docs/deploy.md 有创建命令）
 #   config 对象：duolinzao_staging_config_${CONFIG_VERSION}（文件见 config.staging.toml）
@@ -132,9 +132,9 @@ services:
           - node.labels.duolinzao.role==app
       resources:
         limits:
-          memory: 192M
+          memory: 256M
         reservations:
-          memory: 64M
+          memory: 128M
       restart_policy:
         condition: any
         delay: 5s
@@ -142,9 +142,9 @@ services:
       update_config:
         parallelism: 1
         delay: 10s
-        order: start-first
+        order: stop-first
         failure_action: rollback
-        monitor: 60s
+        monitor: 90s
         max_failure_ratio: 0
       rollback_config:
         parallelism: 1
@@ -162,4 +162,4 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 30s
+      start_period: 45s

@@ -379,7 +379,7 @@ jobs:
           SSH "mkdir -p '${DEPLOY_PATH}'"
           scp -i ~/.ssh/id_deploy -P "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
             deploy/stack.yml deploy/config.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
-      - name: 拉镜像并发版（start-first，失败自动 rollback）
+      - name: 拉镜像并发版（stop-first，失败自动 rollback）
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -406,6 +406,14 @@ jobs:
         run: |
           set -euo pipefail
           SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          diagnose() {
+            SVC="$1"
+            echo "===== diagnose ${SVC} ====="
+            SSH "docker service ps '${SVC}' --no-trunc" || true
+            SSH "docker service inspect '${SVC}' --format '{{json .UpdateStatus}}'" || true
+            SSH "docker service logs '${SVC}' --tail 120 2>&1" || true
+            echo "===== end diagnose ====="
+          }
           WANT="ghcr.io/moderras/duolinzao:${IMAGE_TAG}"
           for _ in $(seq 1 40); do
             STATE="$(SSH "docker service inspect duolinzao_app --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
@@ -415,7 +423,7 @@ jobs:
             RUNNING="${RUNNING:-0}"
             echo "update=${STATE} spec=${SPEC} running=${RUNNING}"
             case "${STATE}" in
-              *rollback*|*paused*) echo "更新失败：${STATE}"; exit 1;;
+              *rollback*|*paused*) echo "更新失败：${STATE}"; diagnose duolinzao_app; exit 1;;
             esac
             SPEC_OK=0
             case "${SPEC}" in
@@ -427,7 +435,7 @@ jobs:
             fi
             sleep 15
           done
-          echo "收敛超时"; exit 1
+          echo "收敛超时"; diagnose duolinzao_app; exit 1
       - name: 公网健康检查 https://域名/healthz（带重试）
         run: |
           set -euo pipefail
@@ -569,7 +577,7 @@ jobs:
             deploy/stack.staging.yml deploy/config.staging.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
           # manager 侧文件名统一为 stack.yml / config.toml，deploy 命令与生产同形。
           SSH "cd '${DEPLOY_PATH}' && mv -f stack.staging.yml stack.yml && mv -f config.staging.toml config.toml"
-      - name: 拉镜像并发版（start-first，失败自动 rollback）
+      - name: 拉镜像并发版（stop-first，失败自动 rollback）
         if: steps.guard.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -597,6 +605,14 @@ jobs:
         run: |
           set -euo pipefail
           SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          diagnose() {
+            SVC="$1"
+            echo "===== diagnose ${SVC} ====="
+            SSH "docker service ps '${SVC}' --no-trunc" || true
+            SSH "docker service inspect '${SVC}' --format '{{json .UpdateStatus}}'" || true
+            SSH "docker service logs '${SVC}' --tail 120 2>&1" || true
+            echo "===== end diagnose ====="
+          }
           WANT="ghcr.io/moderras/duolinzao:${IMAGE_TAG}"
           for _ in $(seq 1 40); do
             STATE="$(SSH "docker service inspect duolinzao-staging_app --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
@@ -605,7 +621,7 @@ jobs:
             RUNNING="${RUNNING:-0}"
             echo "update=${STATE} spec=${SPEC} running=${RUNNING}"
             case "${STATE}" in
-              *rollback*|*paused*) echo "更新失败：${STATE}"; exit 1;;
+              *rollback*|*paused*) echo "更新失败：${STATE}"; diagnose duolinzao-staging_app; exit 1;;
             esac
             SPEC_OK=0
             case "${SPEC}" in
@@ -617,7 +633,7 @@ jobs:
             fi
             sleep 15
           done
-          echo "收敛超时"; exit 1
+          echo "收敛超时"; diagnose duolinzao-staging_app; exit 1
       - name: 公网健康检查 https://staging 域名/healthz（带重试）
         if: steps.guard.outputs.ready == 'true'
         run: |
