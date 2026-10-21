@@ -2308,6 +2308,103 @@ async fn csrf_gate_and_security_headers() {
 }
 
 #[tokio::test]
+async fn app_static_no_spa_fallback() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+
+    // 本用例自建带 static_dir 的 state：公共 prepare 不配静态目录，
+    // 否则 fallback 的 ServeDir 会把“无路由 POST”的 404 变成 405，干扰旧断言。
+    let app_dir = std::env::temp_dir().join("duolinzao-phase1-app");
+    let _ = std::fs::remove_dir_all(&app_dir);
+    std::fs::create_dir_all(app_dir.join("app")).unwrap();
+    std::fs::write(
+        app_dir.join("app/version.json"),
+        r#"{"versionCode":1,"versionName":"0.1.2","url":"/app/duolinzao.apk","sha256":"abc"}"#,
+    )
+    .unwrap();
+    std::fs::write(app_dir.join("app/duolinzao.apk"), b"fakepk").unwrap();
+    let raw_cfg = example_config().replace(
+        "[server]",
+        &format!("[server]\nstatic_dir = \"{}\"", app_dir.to_str().unwrap()),
+    );
+    let config = AppConfig::parse(&raw_cfg).unwrap();
+    let state = AppState::new(
+        api.pool.clone(),
+        config,
+        Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).single().unwrap(),
+        )),
+        api.mailer.clone(),
+        Arc::new(api.scripts.clone()),
+    )
+    .unwrap();
+    let app = router(state);
+
+    async fn raw(app: axum::Router, uri: &str) -> (StatusCode, Value, Vec<(String, String)>, Vec<u8>) {
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("user-agent", "phase1-test")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.expect("oneshot");
+        let status = response.status();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string(),
+                    value.to_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body, headers, bytes.to_vec())
+    }
+    let header = |headers: &[(String, String)], name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    };
+
+    // version.json：200 + JSON 体 + JSON 类型 + 不缓存。
+    let (status, body, headers, _) = raw(app.clone(), "/app/version.json").await;
+    assert_eq!(status, StatusCode::OK, "version.json 应直出");
+    assert_eq!(body["versionCode"], 1, "{body}");
+    assert_eq!(body["url"], "/app/duolinzao.apk", "{body}");
+    assert_eq!(header(&headers, "content-type"), "application/json", "{headers:?}");
+    assert_eq!(header(&headers, "cache-control"), "no-store", "{headers:?}");
+
+    // APK：200 + Android 包类型。
+    let (status, _, headers, bytes) = raw(app.clone(), "/app/duolinzao.apk").await;
+    assert_eq!(status, StatusCode::OK, "apk 应直出");
+    assert_eq!(bytes, b"fakepk", "应为夹具包内容");
+    assert_eq!(
+        header(&headers, "content-type"),
+        "application/vnd.android.package-archive",
+        "{headers:?}"
+    );
+
+    // 缺文件：404 JSON（error=not_found），绝不能回退 index.html。
+    let (status, body, headers, bytes) = raw(app.clone(), "/app/missing.apk").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "缺文件应 404");
+    assert_eq!(body["error"], "not_found", "{body}");
+    assert_eq!(header(&headers, "content-type"), "application/json", "{headers:?}");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("<html"),
+        "不能回退 SPA 页面"
+    );
+
+    // 路径逃逸：同样 404。
+    let (status, _, _, _) = raw(app.clone(), "/app/../secret").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "逃逸应 404");
+}
+
+#[tokio::test]
 async fn security_hardening_round2() {
     let _gate = GATE.lock().await;
     let api = prepare().await;
