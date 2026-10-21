@@ -190,14 +190,14 @@ pub async fn put_keystore(
 
 pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
     let hit = authorize(&user.assignments, Perm::SystemSuper, None)?;
-    let Some(dir) = state.config.resolved_app_dir() else {
-        return Err(AppError::bad("app_dir_missing", "服务端未配置静态目录"));
-    };
     let Some(signing) = load_row(&state.pool, &state.config.local_key).await? else {
         return Err(AppError::bad(
             "signing_not_configured",
             "尚未上传签名 keystore，请超管先在「应用签名」页上传",
         ));
+    };
+    let Some(dir) = state.config.resolved_app_dir() else {
+        return Err(AppError::bad("app_dir_missing", "服务端未配置静态目录"));
     };
     let Some(signer) = apksigner_path() else {
         return Err(AppError::new(
