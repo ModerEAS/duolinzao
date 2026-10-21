@@ -209,4 +209,7 @@ data class VersionInfo(
     val versionName: String = "",
     val url: String = "",
     val sha256: String = "",
+    // 服务端标注：release（正式 keystore）/ ephemeral（CI 一次性 keystore）/ unsigned。
+    // 仅展示/排查用，不参与更新判断（json 已配 ignoreUnknownKeys，缺字段也兼容）。
+    val signing: String = "",
 )

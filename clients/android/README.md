@@ -14,11 +14,15 @@
 ```bash
 cd clients/android
 ./gradlew :app:assembleDebug        # 调试包（含 http 明文、开发设置页）
-./gradlew :app:assembleRelease      # 通用包底版（未签名，部署前走 inject 脚本重签）
+./gradlew :app:assembleRelease      # 未签通用包（正式签名在服务端完成，见下）
 ```
 
-产物：`app/build/outputs/apk/{debug,release}/app-*.apk`。`versionCode=1` / `versionName=0.1.2`
-与仓库基线（Cargo `0.1.2`）对齐；inject 脚本原样沿用这两个值，部署方不覆盖。
+产物：`app/build/outputs/apk/{debug,release}/app-*.apk`。版本号平时不用管：
+CI 自动注入（`versionName` = Gitea 风格串 `scripts/ci-version.sh`，
+`versionCode` = `git rev-list --count HEAD` 单调递增）；本地不传 Gradle 属性时
+默认 `versionCode=1` / `versionName=0.1.2`。inject 脚本原样沿用构建值，部署方不覆盖。
+`version.json` 另带 `signing` 标注（`release` 正式 keystore / `ephemeral` CI 一次性 /
+`unsigned` 未签名），App 端只做展示，不参与更新判断。
 
 ## 运行（模拟器 / 真机）
 
@@ -30,19 +34,20 @@ cd clients/android
    模拟器连宿主机后端可用 `http://10.0.2.2:端口`（仅 debug 包允许明文 http，正式包只认 https 同源）；
    debug 包可在「我的 → 开发设置」里临时覆盖 Base URL，正式包无此入口。
 
-## inject 改包（部署方在构建机执行，不在业务容器里现场编）
+## inject 改包（CI 里执行，只改 baseUrl，不签名）
 
 ```bash
-# 需要 unzip + zipalign + apksigner/apkanalyzer（或 aapt）+ python；Linux 部署机同样可用。
-# KEYSTORE 等经环境传入，密钥不进仓库。
+# 需要 unzip + zipalign + apkanalyzer（或 aapt）+ python。
+# 签名材料只活在应用数据库，不走本脚本、不进 GitHub、不进部署机文件。
 export ANDROID_HOME=/path/to/android-sdk
-KEYSTORE=/path/to/site.jks KEYSTORE_PASS=... KEY_ALIAS=... KEY_PASS=... \
-  scripts/inject-server-url.sh https://app.example.com universal.apk duolinzao.apk
-# 产物：duolinzao.apk + 同目录 version.json（versionCode/Name 沿用通用包原值）
-# 放到站点静态目录 {static_dir}/app/：/app/duolinzao.apk 与 /app/version.json
+scripts/inject-server-url.sh https://app.example.com universal.apk duolinzao.apk
+# 产物：duolinzao.apk（未签，zipalign 已做）+ 同目录 version.json
+# （versionCode/Name 沿用通用包原值，signing 标 unsigned；CI 打进镜像，签名发布时服务端重写）
 ```
 
-未设 `KEYSTORE` 时输出未签名包（仅供检查 `server.json`，发布前必须重签）。
+正式签名在服务端完成：超管在站点「应用签名」页把 keystore 存进数据库后点
+「签名发布」，服务端用 `apksigner` 签当前包、重算 sha256 并写出正式 `version.json`
+（`signing` 为 `release`）。密钥永不进仓库，见 `docs/deploy.md` §7。
 
 ## 应用内更新
 

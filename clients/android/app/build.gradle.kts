@@ -10,13 +10,17 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        // 标识符 duolinzao；版本与仓库基线对齐（Cargo 0.1.0）。
+        // 标识符 duolinzao。CI 经 -PdlzVersionCode/-PdlzVersionName 传入
+        // Gitea 风格串（scripts/ci-version.sh）与 git rev-list 计数；
+        // 本地不传时保留默认值，本地构建不破。
         // 通用 APK 的 versionCode/versionName 由 inject 脚本原样读取，部署方不覆盖。
         applicationId = "com.duolinzao.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.2"
+        val dlzVersionCode = (findProperty("dlzVersionCode") as String?)?.toIntOrNull() ?: 1
+        val dlzVersionName = (findProperty("dlzVersionName") as String?)?.trim()?.takeIf { it.isNotEmpty() } ?: "0.1.2"
+        versionCode = dlzVersionCode
+        versionName = dlzVersionName
         manifestPlaceholders["cleartextPermitted"] = false
     }
 

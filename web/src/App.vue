@@ -4,6 +4,7 @@ import { Bell } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { api, explain, personName } from "./api";
 import AccountPage from "./pages/AccountPage.vue";
+import AppSigningPage from "./pages/AppSigningPage.vue";
 import AlertPage from "./pages/AlertPage.vue";
 import AuditPage from "./pages/AuditPage.vue";
 import CommentsPage from "./pages/CommentsPage.vue";
@@ -39,6 +40,7 @@ type Page =
   | "export"
   | "audit"
   | "email"
+  | "appSigning"
   | "threshold"
   | "recover"
   | "llm"
@@ -98,6 +100,7 @@ const nav = computed(() =>
     { group: "总管 / 超管", key: "threshold" as Page, label: "阈值", icon: "Operation", show: can("rating.strong_alert_config") },
     { group: "总管 / 超管", key: "recover" as Page, label: "找回", icon: "Key", show: can("user.recover") },
     { group: "总管 / 超管", key: "llm" as Page, label: "LLM", icon: "Cpu", show: can("system.super") },
+    { group: "总管 / 超管", key: "appSigning" as Page, label: "应用签名", icon: "Key", show: can("system.super") },
     { group: "其它", key: "account" as Page, label: "账户", icon: "Setting", show: true },
     { group: "其它", key: "employee" as Page, label: "员工竖屏", icon: "Iphone", show: hasLandscape.value && (can("meal.self_read") || can("shift.self_write")) },
   ].filter((item) => item.show),
@@ -243,6 +246,7 @@ onMounted(async () => {
       <ThresholdPage v-else-if="page === 'threshold'" />
       <RecoverPage v-else-if="page === 'recover'" />
       <LlmPage v-else-if="page === 'llm'" />
+      <AppSigningPage v-else-if="page === 'appSigning'" />
       <AccountPage v-else-if="page === 'account'" @open-devices="page = 'device'" />
       <div v-else class="phone-wrap">
         <div class="phone"><EmployeePage /></div>

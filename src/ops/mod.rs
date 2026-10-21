@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod app_signing;
 pub mod catalog;
 pub mod meal;
 pub mod session;
