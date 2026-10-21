@@ -221,7 +221,9 @@ async fn generate_and_store(
         Some("app_signing"),
         None,
         // 只记别名 + keystore 指纹：密码与 keystore 本体永不进审计。
-        json!({"key_alias": alias, "keystore_sha256": fingerprint, "generated": true}),
+        // 注意审计 summary 会过 sanitize（子串 "key"/"code" 会被整键剥掉），
+        // 所以这里用 alias/fingerprint，绝不用 key_alias/keystore_sha256。
+        json!({"alias": alias, "fingerprint": fingerprint, "generated": true}),
     )
     .await?;
     Ok((alias, fingerprint))
@@ -317,7 +319,8 @@ pub async fn put_keystore(
         Some("app_signing"),
         None,
         // 只记别名 + keystore 指纹 + 字节数 + 是否覆盖：密码与 keystore 本体永不进审计。
-        json!({"key_alias": alias, "keystore_sha256": fingerprint, "keystore_bytes": keystore.len(), "replaced": existed}),
+        // 字段名避开 sanitize 子串（"key"/"code" 整键剥掉）：不用 key_alias/keystore_sha256/keystore_bytes。
+        json!({"alias": alias, "fingerprint": fingerprint, "file_bytes": keystore.len(), "replaced": existed}),
     )
     .await?;
     Ok(status_body(true, Some(&alias), Some(&fingerprint), None))
@@ -325,7 +328,8 @@ pub async fn put_keystore(
 
 pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
     let hit = authorize(&user.assignments, Perm::SystemSuper, None)?;
-    // 空库时先自动生成一把入库再签（已有则不动）；响应带 keystore_generated 供 UI 提示。
+    // 空库时先自动生成一把入库再签（已有则不动）；响应带 keystore_generated 供 UI 提示，
+    // 审计记 auto_generated（sanitize 会剥掉含 "key" 子串的键）。
     let (signing, generated) = match load_row(&state.pool, &state.config.local_key).await? {
         Some(row) => (row, false),
         None => {
@@ -435,12 +439,12 @@ pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value,
         Some("app_signing"),
         None,
         json!({
-            "key_alias": alias,
-            "keystore_sha256": fingerprint,
-            "version_code": version_code,
+            "alias": alias,
+            "fingerprint": fingerprint,
+            "version": version_code,
             "apk_sha256": sha256,
             "signing": "release",
-            "keystore_generated": generated,
+            "auto_generated": generated,
         }),
     )
     .await?;

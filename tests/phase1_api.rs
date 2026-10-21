@@ -2517,8 +2517,9 @@ async fn app_signing_keystore_in_db() {
         for key in ["configured", "key_alias", "keystore_sha256", "updated_at"] {
             assert!(keys.contains(&key), "状态缺 {key}，{body}");
         }
+        // 精确匹配：指纹键 keystore_sha256 是允许的，绝不能用 contains 误杀。
         for key in ["keystore", "keystore_password", "key_password", "ciphertext", "password"] {
-            assert!(!keys.iter().any(|item| item.contains(key)), "状态不得含 {key}，{body}");
+            assert!(!keys.contains(&key), "状态不得含 {key}，{body}");
         }
         let dup = must(
             api.call("POST", "/api/admin/app-signing/generate", Some(&super_token), None, None, None)
@@ -2619,7 +2620,7 @@ async fn app_signing_keystore_in_db() {
         .unwrap()
         .iter()
         .filter(|item| item["action"] == "app_signing")
-        .find(|item| item["summary"].get("keystore_bytes").is_some())
+        .find(|item| item["summary"].get("file_bytes").is_some())
         .expect("应有 PUT keystore 审计")
         .clone();
     assert_eq!(entry["summary"]["replaced"], false, "空库首次上传 replaced=false，{entry}");
@@ -2808,7 +2809,7 @@ async fn app_signing_auto_generate_sign_and_overwrite() {
         .find(|item| item["summary"].get("replaced") == Some(&json!(true)))
         .expect("应有覆盖审计")
         .clone();
-    assert_eq!(replaced["summary"]["key_alias"], "custom-key", "{replaced}");
+    assert_eq!(replaced["summary"]["alias"], "custom-key", "{replaced}");
     let signs: Vec<&Value> =
         items.iter().filter(|item| item["action"] == "app_sign_release").collect();
     assert_eq!(signs.len(), 2, "应有两次签名审计");
@@ -2818,7 +2819,7 @@ async fn app_signing_auto_generate_sign_and_overwrite() {
         for secret in ["ks-pass-2", "key-pass-2", "second-jks-bytes"] {
             assert!(!entry.to_string().contains(secret), "审计不得含 {secret}，{entry}");
         }
-        for key in ["password", "ciphertext", "keystore_bytes_raw"] {
+        for key in ["password", "ciphertext"] {
             assert!(
                 entry["summary"].get(key).is_none(),
                 "审计 summary 不得含 {key}，{entry}"
