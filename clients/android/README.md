@@ -34,6 +34,22 @@ CI 自动注入（`versionName` = Gitea 风格串 `scripts/ci-version.sh`，
    模拟器连宿主机后端可用 `http://10.0.2.2:端口`（仅 debug 包允许明文 http，正式包只认 https 同源）；
    debug 包可在「我的 → 开发设置」里临时覆盖 Base URL，正式包无此入口。
 
+## UI 测试（Compose 冒烟，mock）
+
+- 测试代码：`app/src/androidTest/java/com/duolinzao/app/SmokeUiTest.kt`，
+  用 `createAndroidComposeRule<MainActivity>` 走密码兜底登录→断言底部三 Tab
+  （`assets/server.json` 默认 `useMock:true`，不连真后端；不依赖 Passkey）。
+- 本地：先起模拟器（API ≥ 30，`adb devices` 可见），再跑：
+
+```bash
+cd clients/android
+./gradlew :app:connectedDebugAndroidTest   # 需模拟器/真机
+./gradlew :app:assembleDebugAndroidTest    # 仅编译测试包，无需设备
+```
+
+- CI：在 `.github/workflows/android.yml` 的 `ui-test` job（API 30 google_apis 模拟器），
+  与 `assemble` 并行、不进主 `ci.yml` 的 needs，不挡后端主 CI。
+
 ## inject 改包（CI 里执行，只改 baseUrl，不签名）
 
 ```bash

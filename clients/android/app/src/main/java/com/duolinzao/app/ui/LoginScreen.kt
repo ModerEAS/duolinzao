@@ -21,6 +21,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.duolinzao.app.api.ApiException
 import com.duolinzao.app.api.Session
@@ -77,7 +78,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
         Text("多邻灶", style = MaterialTheme.typography.headlineMedium)
         Text("员工登录", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        DlTextField(username, { username = it }, "账号")
+        DlTextField(username, { username = it }, "账号", testTag = "login_username")
 
         DlPrimaryButton("使用 Passkey 登录") {
             scope.launch {
@@ -143,10 +144,10 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
             }
         }
 
-        TextButton(onClick = { showPwd = !showPwd }) { Text(if (showPwd) "收起密码登录 ▴" else "密码登录（兜底） ▾") }
+        TextButton(onClick = { showPwd = !showPwd }, modifier = Modifier.testTag("login_password_toggle")) { Text(if (showPwd) "收起密码登录 ▴" else "密码登录（兜底） ▾") }
         if (showPwd) {
-            DlTextField(password, { password = it }, "密码", password = true)
-            DlPrimaryButton("登录") {
+            DlTextField(password, { password = it }, "密码", password = true, testTag = "login_password")
+            DlPrimaryButton("登录", testTag = "login_submit") {
                 scope.launch {
                     try {
                         Session.repo.loginPassword(username, password)
