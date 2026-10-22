@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -24,9 +25,9 @@ fun ShellScreen(onLogout: () -> Unit) {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0; nav.navigate("meals") }, icon = {}, label = { Text("报餐") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; nav.navigate("score") }, icon = {}, label = { Text("评分") })
-                NavigationBarItem(selected = tab == 2, onClick = { tab = 2; nav.navigate("mine") }, icon = {}, label = { Text("我的") })
+                NavigationBarItem(selected = tab == 0, onClick = { tab = 0; nav.navigate("meals") }, icon = {}, label = { Text("报餐") }, modifier = Modifier.testTag("tab_meals"))
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; nav.navigate("score") }, icon = {}, label = { Text("评分") }, modifier = Modifier.testTag("tab_score"))
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2; nav.navigate("mine") }, icon = {}, label = { Text("我的") }, modifier = Modifier.testTag("tab_mine"))
             }
         },
     ) { padding ->

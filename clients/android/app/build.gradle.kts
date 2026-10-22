@@ -21,6 +21,7 @@ android {
         val dlzVersionName = (findProperty("dlzVersionName") as String?)?.trim()?.takeIf { it.isNotEmpty() } ?: "0.1.2"
         versionCode = dlzVersionCode
         versionName = dlzVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["cleartextPermitted"] = false
     }
 
@@ -65,4 +66,10 @@ dependencies {
     // Passkey：Credential Manager 平台 API，禁止 WebView。无 GMS/无凭据时自动回退密码。
     implementation(libs.credentials)
     implementation(libs.credentials.play.auth)
+    // Compose UI 冒烟测试（mock，不连真后端，见 SmokeUiTest）。
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.test.junit)
+    androidTestImplementation(libs.espresso.core)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

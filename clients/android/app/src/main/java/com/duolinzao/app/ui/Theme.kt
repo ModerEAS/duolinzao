@@ -16,6 +16,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -37,6 +38,7 @@ fun DlTextField(
     label: String,
     password: Boolean = false,
     modifier: Modifier = Modifier,
+    testTag: String = "",
 ) {
     OutlinedTextField(
         value = value,
@@ -44,23 +46,26 @@ fun DlTextField(
         label = { Text(label) },
         singleLine = true,
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().then(if (testTag.isNotEmpty()) Modifier.testTag(testTag) else Modifier),
     )
 }
 
 @Composable
-fun DlPrimaryButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+fun DlPrimaryButton(text: String, enabled: Boolean = true, testTag: String = "", onClick: () -> Unit) {
     Button(
         onClick = onClick,
         enabled = enabled,
         colors = ButtonDefaults.buttonColors(containerColor = Green),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().then(if (testTag.isNotEmpty()) Modifier.testTag(testTag) else Modifier),
     ) { Text(text) }
 }
 
 @Composable
-fun DlOutlineButton(text: String, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) { Text(text) }
+fun DlOutlineButton(text: String, testTag: String = "", onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().then(if (testTag.isNotEmpty()) Modifier.testTag(testTag) else Modifier),
+    ) { Text(text) }
 }
 
 @Composable
