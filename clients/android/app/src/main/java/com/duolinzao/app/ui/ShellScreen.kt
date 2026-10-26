@@ -19,7 +19,7 @@ import androidx.navigation.compose.rememberNavController
 
 /** 员工壳：底部三 Tab（报餐 | 评分 | 我的）；班制页为子页。 */
 @Composable
-fun ShellScreen(onLogout: () -> Unit) {
+fun ShellScreen(onLogout: () -> Unit, onSwitchWorkbench: (() -> Unit)? = null) {
     val nav = rememberNavController()
     var tab by remember { mutableStateOf(0) }
     Scaffold(
@@ -36,7 +36,7 @@ fun ShellScreen(onLogout: () -> Unit) {
                 MealsScreen(onOpenShift = { nav.navigate("shift") }, onOpenCanteens = { tab = 2; nav.navigate("mine") })
             }
             composable("score") { ScoreScreen() }
-            composable("mine") { MineScreen(onLogout = onLogout, onOpenShift = { nav.navigate("shift") }) }
+            composable("mine") { MineScreen(onLogout = onLogout, onOpenShift = { nav.navigate("shift") }, onSwitchWorkbench = onSwitchWorkbench) }
             composable("shift") { ShiftScreen(onBack = { nav.popBackStack() }) }
         }
     }

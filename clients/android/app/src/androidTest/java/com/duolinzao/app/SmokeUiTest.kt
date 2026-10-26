@@ -23,6 +23,26 @@ class SmokeUiTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
+    fun canteenLoginEntersCanteenShell() {
+        // 食堂 mock 账号：用户名 canteen，任意非空密码
+        composeRule.onNodeWithText("员工登录").assertIsDisplayed()
+        composeRule.onNodeWithTag("login_password_toggle").performScrollTo().performClick()
+        composeRule.onNodeWithTag("login_username").performScrollTo().performTextInput("canteen")
+        composeRule.onNodeWithTag("login_password").performScrollTo().performTextInput("password123")
+        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
+
+        // 食堂竖屏壳四 Tab 出现，人数卡可见
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            composeRule.onAllNodesWithTag("tab_headcount").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("tab_headcount").assertIsDisplayed()
+        composeRule.onNodeWithTag("tab_optimize").assertIsDisplayed()
+        composeRule.onNodeWithTag("tab_menu").assertIsDisplayed()
+        composeRule.onNodeWithTag("tab_more").assertIsDisplayed()
+        composeRule.onNodeWithTag("headcount_card_lunch").assertIsDisplayed()
+    }
+
+    @Test
     fun loginPasswordEntersShell() {
         // 1. 启动后能看到登录页
         composeRule.onNodeWithText("员工登录").assertIsDisplayed()

@@ -70,6 +70,8 @@ interface DlRepository {
     suspend fun notifications(): List<Notice>
     suspend fun readNotification(id: String)
     suspend fun checkUpdate(): VersionInfo?
+    /** 食堂人数：所选日期早/午/晚有效报餐人数（Web OverviewPage 同接口）。 */
+    suspend fun headcount(canteenId: String, date: String): Headcount
 }
 
 private val SHANGHAI: ZoneId = ZoneId.of("Asia/Shanghai")
@@ -221,4 +223,5 @@ class NetworkRepository(private val api: ApiClient) : DlRepository {
     override suspend fun checkUpdate(): VersionInfo? {
         return null
     }
-}
+    override suspend fun headcount(canteenId: String, date: String): Headcount =
+        parse(api.get("/api/canteens/$canteenId/headcount?date=$date"))

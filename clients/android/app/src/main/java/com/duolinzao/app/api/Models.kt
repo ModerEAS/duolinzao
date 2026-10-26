@@ -32,7 +32,19 @@ data class Me(
         val custom = display_name?.trim().orEmpty()
         return custom.ifEmpty { username.trim() }
     }
+
+    /** 食堂竖屏工作台能力：任一角色命中，或权限含运营/总管码（与 Web 侧栏 show 条件同思路）。 */
+    fun hasWorkbench(): Boolean {
+        if (roles.any { it.role == "canteen" || it.role == "admin" || it.role == "super_admin" }) return true
+        return permissions.any { it in WORKBENCH_CODES }
+    }
 }
+
+val WORKBENCH_CODES = setOf(
+    "menu.read", "menu.write", "optimizer.read", "meal.admin_override",
+    "rating.admin_read", "comment.admin_read", "user.invite", "export.run",
+    "audit.read", "system.super", "rating.strong_alert_config", "user.recover",
+)
 
 @Serializable
 data class IdResp(val id: String = "")
@@ -138,6 +150,9 @@ data class MealItem(
 
 @Serializable
 data class MealList(val items: List<MealItem> = emptyList(), val locked_dates: List<String> = emptyList())
+
+@Serializable
+data class Headcount(val locked: Boolean = false, val slots: Map<String, Int> = emptyMap())
 
 @Serializable
 data class ShiftResp(
