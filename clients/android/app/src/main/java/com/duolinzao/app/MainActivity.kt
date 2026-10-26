@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
             }
             NetworkRepository(api)
         }
+        // 新建 Activity（非旋转重建）：清掉同一进程上一个 Activity 留下的内存会话。
+        // 否则 Session 单例跨仪器化用例复用，第二个冒烟用例会跳过登录直进 shell。
+        if (savedInstanceState == null) Session.setMe(null)
         setContent {
             DlTheme {
                 Root(
