@@ -225,3 +225,5 @@ class NetworkRepository(private val api: ApiClient) : DlRepository {
     }
     override suspend fun headcount(canteenId: String, date: String): Headcount =
         parse(api.get("/api/canteens/$canteenId/headcount?date=$date"))
+
+}
