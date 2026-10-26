@@ -10,7 +10,7 @@
 
 - `S0_INIT`：启动，会话未判定。
 - `S0_LOADING`：`me` 拉取中。
-- `S0_LOGIN`：未登录（停留在登录/注册）。
+- `S0_LOGIN`：未登录（停留在登录/注册；Passkey/TOTP/邮箱 OTP/密码均收敛为登录成功事件，方法内锁次/冷却子状态不属本文）。
 - `S0_CANTEEN`：食堂壳（`W == true`）。
 - `S0_EMPLOYEE`：员工壳（`W == false` 且有员工能力）。
 - `S0_DENY`：设计稿分支，实现未做——皆无能力时仍进 `S0_EMPLOYEE`（代码 `!hasWorkbench` 一律进员工壳，无“无可用功能”页）。
@@ -60,7 +60,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S5_OVERRIDE`：截止后改单（需 `meal.admin_override`），最小子转移：
   `OV_LOAD(target) --载入成功--> OV_EDIT --改--> OV_SAVE --保存成功--> OV_EDIT'`；
   `--载入失败--> OV_LOAD`（重试）或 `--返回--> S5_MORE`；`--保存失败--> OV_EDIT`（可重试）。
-- `S5_ACCOUNT`：账户（人人可进）；`S5_DEVICE`（Web 需 `device.approve`）。
+- `S5_ACCOUNT`：账户（人人可进；`username` 只读，改 `display_name`）；`S5_DEVICE`（Web 需 `device.approve`）。
 - 总管组（后置；边存在条件＝对应权限码；Web 已有 / Android 未做）：
   `S5_EXPORT`（`export.run`）／`S5_AUDIT`（`audit.read`）／`S5_EMAIL`（`system.super`）／
   `S5_THRESHOLD`（`rating.strong_alert_config`）／`S5_RECOVER`（`user.recover`）／
@@ -155,6 +155,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S6_EDIT --创建失败--> S6_EDIT`（参数保留，可改后重试）。
 - `S6_LIST --作废 id--> S6_REVOKED(id)`（需确认；单向，不可恢复）。
 - `S6_LIST --改次数（≥已用次数；改到等于已用即用尽）--> S6_LIST`。
+- `凭码注册成功 --used_count++--> S6_LIST`（码被作废/用满则注册拒绝；canteen 码的新账号具 W，按 T0 进食堂壳；邀请码不发 admin/super_admin）。
 - 门闩：`user.invite` 缺失则 `S6_EDIT` 不可达。
 
 ### T7 双角色
@@ -239,6 +240,7 @@ stateDiagram-v2
   S6_CREATED_UNSHOWN --> S6_SHOWN : 首次展示
   S6_LIST --> S6_REVOKED : 作废
   S6_LIST --> S6_LIST : 改次数
+  S6_LIST --> S6_LIST : 凭码注册计数++
   S0_CANTEEN --> S0_EMPLOYEE : 切员工端(本地)
   S0_EMPLOYEE --> S0_CANTEEN : 回工作台(本地)
   S0_CANTEEN --> S0_LOGIN : 退出
