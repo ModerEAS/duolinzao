@@ -583,3 +583,26 @@ Then("账户设置展示只读账号、显示名、Passkey、验证器、邮箱�
   await account.getByRole("button", { name: "设备与 Passkey", exact: true }).click();
   await expect(page.getByText("只管理本账号设备；不能按食堂批准他人的新设备")).toBeVisible();
 });
+
+// 场景：窄视口食堂账号进竖屏四 Tab（竖屏壳冒烟，不走 ensureCanteen 的 .side 断言）
+When("以窄视口登录食堂竖屏工作台", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loginAs(page, canteenUser, canteenPass);
+  await expect(page.locator(".portrait .nav")).toBeVisible({ timeout: 10000 });
+});
+
+Then("底栏显示人数、选菜、菜谱、更多四个 Tab", async ({ page }) => {
+  const nav = page.locator(".portrait .nav");
+  for (const label of ["人数", "选菜", "菜谱", "更多"]) {
+    await expect(nav.getByRole("button", { name: new RegExp(label) })).toBeVisible();
+  }
+  await expect(nav.getByRole("button", { name: /人数/ })).toHaveClass(/active/);
+});
+
+Then("顶栏显示食堂选择器", async ({ page }) => {
+  await expect(page.locator(".portrait .top .picker")).toBeVisible();
+});
+
+Then("不显示横屏左侧栏", async ({ page }) => {
+  await expect(page.locator(".shell .side")).toHaveCount(0);
+});

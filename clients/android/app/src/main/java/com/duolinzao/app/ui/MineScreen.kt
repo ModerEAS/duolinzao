@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.duolinzao.app.api.ApiException
 import com.duolinzao.app.api.ApprovalItem
@@ -41,7 +42,7 @@ import kotlinx.serialization.json.Json
 
 /** 我的 Tab：食堂绑定、账户设置、设备与 Passkey、新设备确认、通知、检查更新、退出。 */
 @Composable
-fun MineScreen(onLogout: () -> Unit, onOpenShift: () -> Unit) {
+fun MineScreen(onLogout: () -> Unit, onOpenShift: () -> Unit, onSwitchWorkbench: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val me = Session.me.collectAsState().value
@@ -210,6 +211,11 @@ fun MineScreen(onLogout: () -> Unit, onOpenShift: () -> Unit) {
                 ServerConfig.setDebugOverride(context, debugUrl.ifBlank { null })
                 onLogout()
             }
+        }
+
+        if (onSwitchWorkbench != null) {
+            SectionTitle("工作台")
+            TextButton(onClick = onSwitchWorkbench, modifier = Modifier.testTag("mine_to_workbench")) { Text("切换到食堂工作台") }
         }
 
         SectionTitle("退出")

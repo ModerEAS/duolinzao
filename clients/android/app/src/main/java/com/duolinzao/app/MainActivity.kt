@@ -24,6 +24,7 @@ import com.duolinzao.app.api.MockRepository
 import com.duolinzao.app.api.NetworkRepository
 import com.duolinzao.app.api.ServerConfig
 import com.duolinzao.app.api.Session
+import com.duolinzao.app.ui.CanteenShellScreen
 import com.duolinzao.app.ui.DlTheme
 import com.duolinzao.app.ui.LoginScreen
 import com.duolinzao.app.ui.RegisterScreen
@@ -43,6 +44,9 @@ class MainActivity : ComponentActivity() {
             }
             NetworkRepository(api)
         }
+        // 新建 Activity（非旋转重建）：清掉同一进程上一个 Activity 留下的内存会话。
+        // 否则 Session 单例跨仪器化用例复用，第二个冒烟用例会跳过登录直进 shell。
+        if (savedInstanceState == null) Session.setMe(null)
         setContent {
             DlTheme {
                 Root(
@@ -61,6 +65,9 @@ private fun Root(onLogout: () -> Unit) {
     val me by Session.me.collectAsState()
     var checked by remember { mutableStateOf(false) }
     var bootError by remember { mutableStateOf<String?>(null) }
+    // 双角色切换只改本地导航根，不重登。
+    var forceEmployee by remember { mutableStateOf(false) }
+    val inWorkbench = me?.hasWorkbench() == true && !forceEmployee
 
     LaunchedEffect(Unit) {
         if (ServerConfig.useMock) {
@@ -101,6 +108,21 @@ private fun Root(onLogout: () -> Unit) {
                 onBack = { nav.popBackStack() },
             )
         }
-        composable("shell") { ShellScreen(onLogout = onLogout) }
+        composable("shell") {
+            if (inWorkbench) {
+                CanteenShellScreen(
+                    onLogout = onLogout,
+                    onSwitchEmployee = { forceEmployee = true },
+                )
+            } else {
+                ShellScreen(
+                    onLogout = onLogout,
+                    onSwitchWorkbench = if (me?.hasWorkbench() == true) ({
+                        forceEmployee = false
+                        nav.navigate("shell") { popUpTo("shell") { inclusive = true } }
+                    }) else null,
+                )
+            }
+        }
     }
 }

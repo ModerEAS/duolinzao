@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { Bell } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { api, explain, personName } from "./api";
+import { useNarrow } from "./narrow";
 import AccountPage from "./pages/AccountPage.vue";
 import AppSigningPage from "./pages/AppSigningPage.vue";
 import AlertPage from "./pages/AlertPage.vue";
@@ -11,6 +12,7 @@ import CommentsPage from "./pages/CommentsPage.vue";
 import DevicePage from "./pages/DevicePage.vue";
 import DishEditPage from "./pages/DishEditPage.vue";
 import EmailPage from "./pages/EmailPage.vue";
+import CanteenPortraitShell from "./pages/CanteenPortraitShell.vue";
 import EmployeePage from "./pages/EmployeePage.vue";
 import ExportPage from "./pages/ExportPage.vue";
 import InvitePage from "./pages/InvitePage.vue";
@@ -76,6 +78,17 @@ const landscapeCodes = [
 ];
 
 const hasLandscape = computed(() => landscapeCodes.some((code) => can(code)));
+
+// 工作台能力：角色任一命中，或权限含运营/总管码（与横屏侧栏 show 条件同思路）。
+// 纯员工（仅 meal.self_* / shift）无工作台，走员工竖屏。
+const WORKBENCH_ROLES = ["canteen", "admin", "super_admin"];
+const hasWorkbench = computed(
+  () => auth.me?.roles.some((item) => WORKBENCH_ROLES.includes(item.role)) || hasLandscape.value,
+);
+
+// 窄屏只看 viewport（matchMedia），不用 UA；断点见 narrow.ts 注释。
+const isNarrow = useNarrow();
+const portraitEmployee = ref(false);
 const canteens = computed(() => managedCanteens());
 const needsCanteen = computed(() =>
   ["overview", "menu", "dishEdit", "optimize", "alert", "rating", "comment", "change"].includes(page.value),
@@ -117,6 +130,16 @@ function firstPage(): Page {
   return nav.value.find((item) => item.key !== "employee" && item.key !== "account")?.key ?? "employee";
 }
 
+function toEmployee() {
+  portraitEmployee.value = true;
+  page.value = "employee";
+}
+
+function backToPortrait() {
+  portraitEmployee.value = false;
+  page.value = firstPage();
+}
+
 function open(key: Page) {
   if (key === "dishEdit") dishId.value = null;
   page.value = key;
@@ -128,6 +151,7 @@ function editDish(id: string | null) {
 }
 
 async function enter() {
+  portraitEmployee.value = false;
   page.value = firstPage();
   await loadNotes();
 }
@@ -167,7 +191,7 @@ async function createCanteen() {
 onMounted(async () => {
   await loadVersion();
   await refreshSession();
-  if (auth.me && hasLandscape.value) {
+  if (auth.me && hasWorkbench.value) {
     page.value = firstPage();
     await loadNotes();
   }
@@ -177,9 +201,15 @@ onMounted(async () => {
 <template>
   <div v-if="!auth.ready" class="boot">正在连接…</div>
   <LoginPage v-else-if="!auth.me" @enter="enter" />
-  <div v-else-if="!hasLandscape" class="solo">
+  <div v-else-if="!hasWorkbench" class="solo">
     <EmployeePage />
   </div>
+  <!-- 窄屏食堂竖屏壳：宽屏 .shell 原样不动 -->
+  <div v-else-if="isNarrow && portraitEmployee" class="solo portrait-emp">
+    <button type="button" class="back-bar" @click="backToPortrait">‹ 返回食堂工作台</button>
+    <div class="emp-fill"><EmployeePage /></div>
+  </div>
+  <CanteenPortraitShell v-else-if="isNarrow" @to-employee="toEmployee" />
   <div v-else class="shell">
     <aside class="side">
       <div class="brand">
@@ -267,6 +297,13 @@ onMounted(async () => {
 .boot, .solo { min-height: 100vh; }
 .boot { display: grid; place-items: center; color: #6b7280; }
 .solo { height: 100vh; max-width: 480px; margin: 0 auto; background: #fff; }
+.portrait-emp { display: flex; flex-direction: column; background: #f7f8fa; }
+.back-bar {
+  border: none; background: #fff; color: #2d8a45; font: inherit; font-size: 14px; font-weight: 600;
+  text-align: left; padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #e8eaed; flex-shrink: 0;
+}
+.emp-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.emp-fill .emp { flex: 1; min-height: 0; }
 .shell { display: flex; min-height: 100vh; }
 .side {
   width: var(--dlz-sidebar-w); background: #fff; border-right: 1px solid #e8eaed;

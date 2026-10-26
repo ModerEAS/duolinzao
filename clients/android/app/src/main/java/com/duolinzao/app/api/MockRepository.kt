@@ -14,6 +14,7 @@ class MockRepository : DlRepository {
     private val canteens = listOf(Canteen("c1", "一食堂"), Canteen("c2", "二食堂"))
     private var bound: MutableSet<String> = mutableSetOf("c1")
     private var authed = false
+    private var lastUsername = ""
     private var shiftKind: String? = null
     private val meals: MutableMap<String, Boolean> = mutableMapOf()
     private var displayName: String? = "演示用户"
@@ -32,6 +33,7 @@ class MockRepository : DlRepository {
     override suspend fun loginPassword(username: String, password: String) {
         if (username.isBlank() || password.isBlank()) throw ApiException(400, "login_failed", "账号或密码不正确")
         authed = true
+        lastUsername = username.trim()
     }
     override suspend fun loginTotp(username: String, code: String) {
         if (code.trim().length != 6) throw ApiException(400, "totp_invalid", "验证码不正确")
@@ -55,6 +57,13 @@ class MockRepository : DlRepository {
     }
     override suspend fun me(): Me {
         needAuth()
+        // 用户名 canteen 进食堂 mock：canteen 角色 + 运营权限；其余进员工 mock。
+        if (lastUsername == "canteen") {
+            return Me("mock-canteen", "canteen", "食堂演示", null, false, false,
+                listOf(RoleAssign("canteen", listOf("c1"))),
+                listOf("menu.read", "menu.write", "optimizer.read", "meal.admin_override",
+                    "rating.admin_read", "comment.admin_read", "meal.self_read"), true)
+        }
         return Me("mock-id", "demo", displayName, email, email != null, totpOn,
             listOf(RoleAssign("employee")), listOf("meal.self_read", "meal.self_write"), true)
     }
@@ -206,4 +215,8 @@ class MockRepository : DlRepository {
         notices.replaceAll { if (it.id == id) it.copy(read_at = "2026-10-20T00:00:00Z") else it }
     }
     override suspend fun checkUpdate(): VersionInfo? = null
+    override suspend fun headcount(canteenId: String, date: String): Headcount {
+        needAuth()
+        return Headcount(false, mapOf("breakfast" to 42, "lunch" to 118, "dinner" to 95))
+    }
 }
