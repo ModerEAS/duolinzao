@@ -6,6 +6,8 @@
 
 本文把「食堂 / 管理员 / 总管」在 **Android 竖屏**上的信息架构、路由、人体工程学与分阶段交付写死。实现以本文为准；与横屏 Web 共用同一 Axum API，不新增权限码。
 
+状态机（状态 / 转移 / 跳转边）见 [canteen-portrait-pages.md](canteen-portrait-pages.md)。
+
 ---
 
 ## 0. 目标与非目标

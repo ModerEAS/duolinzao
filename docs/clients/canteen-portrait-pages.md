@@ -1,7 +1,7 @@
 # 食堂竖屏状态机
 
 > 本文只写**状态 / 转移 / 跳转 / 业务门闩**，不写视觉、布局、字号、截图对照、人体工程学。
-> 行为权威仍以一期需求 `docs/requirements-phase1.md` 为准；设计稿对照见 PR #27 分支（本文不复述）。
+> 行为权威仍以一期需求 `docs/requirements-phase1.md` 为准；设计见同目录 `canteen-portrait.md`（已合入）。
 > 约定：`me = GET /api/me`；`W = 工作台能力`；`401 = 会话失效`。
 
 ## 1. 状态列表
@@ -59,7 +59,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S5_RATING` / `S5_COMMENT`：评分汇总 / 评语（只读分支；评语无硬删转移）。
 - `S5_OVERRIDE`：截止后改单（需 `meal.admin_override`），最小子转移：
   `OV_LOAD(target) --载入成功--> OV_EDIT --改--> OV_SAVE --保存成功--> OV_EDIT'`；
-  载入/保存失败回 `OV_EDIT`（可重试）。
+  `--载入失败--> OV_LOAD`（重试）或 `--返回--> S5_MORE`；`--保存失败--> OV_EDIT`（可重试）。
 - `S5_ACCOUNT`：账户（人人可进）；`S5_DEVICE`（Web 需 `device.approve`）。
 - 总管组（后置；边存在条件＝对应权限码；Web 已有 / Android 未做）：
   `S5_EXPORT`（`export.run`）／`S5_AUDIT`（`audit.read`）／`S5_EMAIL`（`system.super`）／
@@ -139,7 +139,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 ### T5 更多/反馈/管理/账户
 
 - `S0_CANTEEN --进更多--> S5_MORE --选子项--> {S5_ALERT, S5_RATING, S5_COMMENT, S5_OVERRIDE,
-  S6_EDIT, S5_ACCOUNT, S5_DEVICE, 总管子节点}`（子项存在 ⟺ 对应权限码持有；无码则边不存在）。
+  S6_LIST, S5_ACCOUNT, S5_DEVICE, 总管子节点}`（子项存在 ⟺ 对应权限码持有；无码则边不存在）。
 - 子节点 `--返回--> S5_MORE`。
 - `S5_MORE --退出登录--> S0_LOGIN`（退出事件清会话；确认框属 UI，不入状态机）。
 - `S5_ACCOUNT --改显示名成功--> S5_ACCOUNT`（名称更新，会话不变）。
@@ -192,6 +192,7 @@ stateDiagram-v2
   S3_ERROR --> S3_LOADING : 重试
   S3_MEAL --> S3_SAVING : 勾选/下一餐
   S3_SAVING --> S3_MEAL : 写回成功
+  S3_MEAL --> S3_WEEK : 返回
   S0_CANTEEN --> S4_LIST : 进菜谱(有写码)
   S0_CANTEEN --> S4_READONLY : 进菜谱(无写码)
   S4_LIST --> S4_ERROR : 列表失败
@@ -199,11 +200,13 @@ stateDiagram-v2
   S4_LIST --> S4_EDIT : 点行/新建
   S4_EDIT --> S4_CONFIRM_OFF : 关启用(on→off)
   S4_CONFIRM_OFF --> S4_SAVING : 确认
+  S4_CONFIRM_OFF --> S4_EDIT : 取消
   S4_EDIT --> S4_SAVING : 保存/开启用
   S4_SAVING --> S4_LIST : 成功
   S0_CANTEEN --> S5_MORE : 进更多
   S5_MORE --> S5_ALERT : 有码
   S5_ALERT --> S4_EDIT : 去停用
+  S5_ALERT --> S5_MORE : 返回
   S5_MORE --> S5_RATING : 有码
   S5_RATING --> S5_MORE : 返回
   S5_MORE --> S5_COMMENT : 有码
@@ -222,12 +225,21 @@ stateDiagram-v2
   S5_MORE --> S5_LLM : 总管(后置)
   S5_MORE --> S5_APP_SIGN : 总管(后置)
   S5_MORE --> S5_CREATE_CANTEEN : 超管(后置)
+  S5_EXPORT --> S5_MORE : 返回
+  S5_AUDIT --> S5_MORE : 返回
+  S5_EMAIL --> S5_MORE : 返回
+  S5_THRESHOLD --> S5_MORE : 返回
+  S5_RECOVER --> S5_MORE : 返回
+  S5_LLM --> S5_MORE : 返回
+  S5_APP_SIGN --> S5_MORE : 返回
+  S5_CREATE_CANTEEN --> S5_MORE : 返回
   S5_MORE --> S6_LIST : 有user.invite
   S6_LIST --> S6_EDIT : 新建
   S6_EDIT --> S6_CREATED_UNSHOWN : 创建成功
   S6_EDIT --> S6_EDIT : 创建失败
   S6_CREATED_UNSHOWN --> S6_SHOWN : 首次展示
   S6_LIST --> S6_REVOKED : 作废
+  S6_LIST --> S6_LIST : 改次数
   S0_CANTEEN --> S0_EMPLOYEE : 切员工端(本地)
   S0_EMPLOYEE --> S0_CANTEEN : 回工作台(本地)
   S0_CANTEEN --> S0_LOGIN : 退出
@@ -245,7 +257,7 @@ stateDiagram-v2
 
 ## 4. 实现对照（状态覆盖）
 
-| 状态 / 转移 | Web 窄屏（PR #27） | Android | 阶段 |
+| 状态 / 转移 | Web 窄屏（#27 已合入） | Android | 阶段 |
 |-------------|-------------------|---------|------|
 | T0 按 `me` 进壳三分支，401 全局边 | 已接 | 已接 | C1 |
 | T7 双角色互切（无会话事件，默认食堂壳） | 已接 | 已接 | C1 |
@@ -260,8 +272,7 @@ stateDiagram-v2
 | S6 列表/作废/改次数，创建失败自环 | 已接 | 未做 | C5 |
 | S5 改单子转移（载入→改→保存） | 已接 | 未做 | C5 |
 | S5 账户改名/改密会话边 | 已接 | 未做（更多账户节点部分实现） | C1 |
-| S5 总管命名态（后置） | 已接 | 未做 | C5+ |
+| S5 总管命名态 / 分支组（后置） | 已接 | 未做 | C5+ |
 | S5 更多退出边 | 已接 | 已接 | C1 |
 | 检查更新转移 | 不含（本期无此节点） | 不含 | — |
 | S5 账户/设备/退出边 | 已接 | 部分：账户名＋双角色边＋退出边已接；设备分支复用员工壳 | C1 |
-| 总管分支组（后置） | 已接 | 未做 | C5+ |
