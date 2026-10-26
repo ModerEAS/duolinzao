@@ -13,7 +13,7 @@
 - `S0_LOGIN`：未登录（停留在登录/注册）。
 - `S0_CANTEEN`：食堂壳（`W == true`）。
 - `S0_EMPLOYEE`：员工壳（`W == false` 且有员工能力）。
-- `S0_DENY`：皆无能力（无可用功能，只能退出）。
+- `S0_DENY`：设计稿分支，实现未做——皆无能力时仍进 `S0_EMPLOYEE`（代码 `!hasWorkbench` 一律进员工壳，无“无可用功能”页）。
 - `S0_EXPIRED`：`401`（任何状态可进，见 T-401）。
 
 `W` 定义（任一命中）：`roles ∋ {canteen, admin, super_admin}`，
@@ -41,16 +41,16 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S3_ERROR(x)`：拉取失败（可重试）。
 - `S3_MEAL(m)`：当餐选定（`m` 为某一 `(day, slot)`）。
 - `S3_SAVING(m, delta)`：勾选 `delta` 写回中。
-- `S3_NOPERM`：`¬optimizer.read`（隐藏或阻断分支）。
+- `S3_NOPERM`：`¬optimizer.read`（宽屏侧栏条目隐藏；竖屏 Tab 常显，进后拉取失败 toast，无阻断）。
 
 ### S4 菜谱
 
 - `S4_LIST(f)`：列表（`f ∈ {菜,饭,汤}` 为当前分组条件）。
-- `S4_ERROR(f)`：列表 `(f)` 拉取失败（可重试；实现可为 LIST 内 error 标志，状态机记为独立态）。
+- `S4_ERROR(f)`：列表 `(f)` 拉取失败（MenuPage 无 try/catch、无重试 affordance；恢复靠重进页/切范围，状态机记为独立态）。
 - `S4_EDIT(id?)`：编辑（`id` 为空＝新建；类型 `∈ {菜,饭,汤}`，启用 `∈ {on, off}`）。
 - `S4_CONFIRM_OFF(id)`：停用待确认（`on → off` 必经，不可跳过）。
 - `S4_SAVING(id)`：表单写回中。
-- `S4_READONLY`：`¬menu.write`（列表可进，写转移全关）。
+- `S4_READONLY`：`¬menu.write`（MenuPage 无写门：新建/停用按钮照常可点，失败靠后端 403 toast；仅宽屏侧栏“编辑菜”条目隐藏）。
 
 ### S5 反馈与管理（更多子节点）
 
@@ -64,7 +64,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - 总管组（后置；边存在条件＝对应权限码；Web 已有 / Android 未做）：
   `S5_EXPORT`（`export.run`）／`S5_AUDIT`（`audit.read`）／`S5_EMAIL`（`system.super`）／
   `S5_THRESHOLD`（`rating.strong_alert_config`）／`S5_RECOVER`（`user.recover`）／
-  `S5_LLM`（`system.super`）／`S5_APP_SIGN`（`system.super`）／`S5_CREATE_CANTEEN`（超管）。
+  `S5_LLM`（`system.super`）／`S5_APP_SIGN`（`system.super`）／`S5_CREATE_CANTEEN`（超管；仅宽屏 sidebar 有入口，竖屏无此边）。
 
 ### S6 邀请码（一次性）
 
@@ -89,17 +89,16 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S0_INIT --启动--> S0_LOADING`。
 - `S0_LOADING --me 拉取成功 ∧ W--> S0_CANTEEN`（双角色默认进此分支）。
 - `S0_LOADING --me 拉取成功 ∧ ¬W ∧ 有员工能力--> S0_EMPLOYEE`。
-- `S0_LOADING --me 拉取成功 ∧ 皆无能力--> S0_DENY`。
+- `S0_LOADING --me 拉取成功 ∧ 皆无能力--> S0_EMPLOYEE`（设计稿的 `S0_DENY` 错误页未实现）。
 - `S0_LOADING --未登录--> S0_LOGIN`。
 - `S0_LOGIN --登录/注册成功 ∧ me(W)--> S0_CANTEEN`；`--登录成功 ∧ me(仅员工)--> S0_EMPLOYEE`。
 - `ANY --401--> S0_EXPIRED --清会话--> S0_LOGIN`。
-- `S0_DENY --退出--> S0_LOGIN`。
 
 ### T1 范围
 
 - `进壳 --managedCanteens()==∅--> S1_NONE`；`==1--> S1_SINGLE`；`≥2--> S1_MULTI(c0)`（`c0` 为首个）。
 - `S1_MULTI(c) --选择 c'--> S1_MULTI(c')`（Web：全局 `canteenId` 改值，子节点重拉；见下如实注）。
-- `S1_NONE --超管建食堂成功--> S1_SINGLE/S1_MULTI`（后置总管分支）。
+- `S1_NONE --超管建食堂成功--> S1_SINGLE/S1_MULTI`（仅宽屏 sidebar 有新建入口；竖屏无此边）。
 
 ### T2 人数
 
@@ -121,7 +120,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S3_MEAL(m) --勾选/取消 delta--> S3_SAVING(m, delta) --写回成功--> S3_MEAL(m')`
  （`m'` 为更新后集合；失败回 `S3_MEAL(m)` 并标记错误）。
 - `S3_MEAL(m) --保存并下一餐--> S3_SAVING --成功--> S3_MEAL(next(m))`（`next` 按需求顺序）。
-- `¬optimizer.read --进入--> S3_NOPERM`（无其它出边）。
+- `¬optimizer.read --宽屏--> 条目隐藏；--竖屏--> S3_WEEK/S3_MEAL 照常进，拉取失败 toast`（竖屏 OptimizePage 无权限门）。
 - 门闩：勾选即时写回（无“暂存再提交”状态）；偏好值不进入状态（无分数展示态）。
 
 ### T4 菜谱
@@ -131,10 +130,10 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S4_EDIT --保存--> S4_SAVING --成功--> S4_LIST`；失败回 `S4_EDIT`。
 - `S4_EDIT(id, on) --关启用--> S4_CONFIRM_OFF(id) --确认--> S4_SAVING --成功--> S4_LIST`；
   `--取消--> S4_EDIT(id, on)`。
-- `S4_LIST(f) --列表拉取失败--> S4_ERROR(f) --重试--> S4_LIST(f)`。
+- `S4_LIST(f) --列表拉取失败--> S4_ERROR(f) --重进页/切范围--> S4_LIST(f)`。
 - `off → on` 不经确认：`S4_EDIT(id, off) --开启用--> S4_SAVING`；仅 `on → off` 必经 `S4_CONFIRM_OFF`。
 - `S5_ALERT --去停用 id--> S4_EDIT(id)`（唯一出边，不存在列表直接下架的转移）。
-- `¬menu.write --进入--> S4_READONLY`（`S4_EDIT/S4_SAVING/S4_CONFIRM_OFF` 不可达）。
+- `¬menu.write --宽屏--> “编辑菜”条目隐藏；--竖屏/列表--> S4_LIST 照常进，写操作失败 toast`。
 
 ### T5 更多/反馈/管理/账户
 
@@ -171,7 +170,7 @@ stateDiagram-v2
   [*] --> S0_LOADING
   S0_LOADING --> S0_CANTEEN : me且W
   S0_LOADING --> S0_EMPLOYEE : me仅员工
-  S0_LOADING --> S0_DENY : 皆无能力
+  S0_LOADING --> S0_EMPLOYEE : 皆无能力(无DENY页)
   S0_LOADING --> S0_LOGIN : 未登录
   S0_CANTEEN --> S1_MULTI : 范围≥2
   S0_CANTEEN --> S1_SINGLE : 范围=1
@@ -184,7 +183,7 @@ stateDiagram-v2
   S2_ERROR --> S2_LOADING : 重试/切日
   S2_READY --> S2_LOADING : 切日
   S0_CANTEEN --> S3_WEEK : 进选菜(有码)
-  S0_CANTEEN --> S3_NOPERM : 进选菜(无码)
+  S0_CANTEEN --> S3_NOPERM : 宽屏无码隐藏(竖屏照常进)
   S3_WEEK --> S3_LOADING : 切周/点格
   S3_LOADING --> S3_WEEK : 周拉取成功
   S3_LOADING --> S3_MEAL : 当餐拉取成功
@@ -194,9 +193,9 @@ stateDiagram-v2
   S3_SAVING --> S3_MEAL : 写回成功
   S3_MEAL --> S3_WEEK : 返回
   S0_CANTEEN --> S4_LIST : 进菜谱(有写码)
-  S0_CANTEEN --> S4_READONLY : 进菜谱(无写码)
+  S0_CANTEEN --> S4_READONLY : 宽屏编辑条目隐藏(列表无门)
   S4_LIST --> S4_ERROR : 列表失败
-  S4_ERROR --> S4_LIST : 重试
+  S4_ERROR --> S4_LIST : 重进页/切范围
   S4_LIST --> S4_EDIT : 点行/新建
   S4_EDIT --> S4_CONFIRM_OFF : 关启用(on→off)
   S4_CONFIRM_OFF --> S4_SAVING : 确认
@@ -224,7 +223,7 @@ stateDiagram-v2
   S5_MORE --> S5_RECOVER : 有码(后置)
   S5_MORE --> S5_LLM : 总管(后置)
   S5_MORE --> S5_APP_SIGN : 总管(后置)
-  S5_MORE --> S5_CREATE_CANTEEN : 超管(后置)
+  S5_MORE --> S5_CREATE_CANTEEN : 超管(仅宽屏;后置)
   S5_EXPORT --> S5_MORE : 返回
   S5_AUDIT --> S5_MORE : 返回
   S5_EMAIL --> S5_MORE : 返回
@@ -248,7 +247,7 @@ stateDiagram-v2
   S0_EXPIRED --> S0_LOGIN : 清会话
 ```
 
-边清单（与图一致）：登录→壳三分支；壳→范围三分支（含 `S1_NONE→S2_EMPTY`）；
+边清单（与图一致）：登录→壳两分支（设计稿的 DENY 页未实现，皆无能力进员工壳）；壳→范围三分支（含 `S1_NONE→S2_EMPTY`）；
 范围→人数拉取（含切食堂完整边）；人数切日/重试环；选菜切周/点格经 LOADING＋ERROR 重试环、
 周视图⇄当餐＋写回环＋下一餐、`NOPERM` 阻断分支；菜谱列表ERROR重试环、列表⇄编辑、
 `on→off` 经确认（`off→on` 直达写回）、只读分支；强提醒→编辑单向边；
@@ -272,7 +271,7 @@ stateDiagram-v2
 | S6 列表/作废/改次数，创建失败自环 | 已接 | 未做 | C5 |
 | S5 改单子转移（载入→改→保存） | 已接 | 未做 | C5 |
 | S5 账户改名/改密会话边 | 已接 | 未做（更多账户节点部分实现） | C1 |
-| S5 总管命名态 / 分支组（后置） | 已接 | 未做 | C5+ |
+| S5 总管命名态 / 分支组（后置；建食堂仅宽屏） | 宽屏已接/竖屏未接 | 未做 | C5+ |
 | S5 更多退出边 | 已接 | 已接 | C1 |
 | 检查更新转移 | 不含（本期无此节点） | 不含 | — |
 | S5 账户/设备/退出边 | 已接 | 部分：账户名＋双角色边＋退出边已接；设备分支复用员工壳 | C1 |
