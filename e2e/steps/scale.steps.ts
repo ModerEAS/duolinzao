@@ -243,6 +243,12 @@ When("各食堂账号登录并创建本食堂菜饭汤", async ({ page }) => {
         await page.getByPlaceholder("请输入菜品名称").fill(dish);
         await page.locator(`.form-card label:has(input[value="${kind}"])`).click();
         await page.getByRole("button", { name: "保存" }).click();
+        // 先等表单自己返回列表：DishEdit 仅在写回提交成功后才 emit back。
+        // 若保存 click 后立刻点侧栏切走，列表可能在写回提交前拉取；之后 back
+        // 不再触发重挂载/重拉（同值同食堂），表格停留在旧数据，行断言必超时。
+        await expect(page.getByRole("button", { name: "新建菜品" })).toBeVisible({
+          timeout: 15000,
+        });
         // 落定信号用列表出现该菜名（toast 会残留误判，同食堂创建一节）。
         // 注意先点对应页签：列表默认停留在“菜”，饭/汤行被过滤不可见。
         await openSide(page, "菜谱");
