@@ -416,7 +416,15 @@ docs/clients/
 
 ---
 
-## 9. 已确认
+## 9. Web 窄屏同壳（2026-10-26 起）
+
+- **宽屏 Web 不动**：继续现有左侧栏 `.shell`，桌面横屏工作台交互不变。
+- **窄屏只看 viewport**：`web/src/narrow.ts` 的 `useNarrow()` 用 `matchMedia('(max-width: 900px)')`，**不用 UA**。断点 900px 与 `OverviewPage` 卡片堆叠的 `@media (max-width: 900px)` 取同一值，壳切换与卡片单列同时翻转。
+- 窄屏 + 有工作台能力 → `CanteenPortraitShell.vue`（底栏四 Tab：人数/选菜/菜谱/更多，顶栏食堂选择器，绿主色 #2d8a45，视觉对齐 `docs/ui/canteen-portrait-mock/`）。
+- 四 Tab 复用横屏页组件：人数=OverviewPage、选菜=OptimizePage、菜谱=MenuPage+DishEditPage（编辑菜走现有 dishEdit 流，全屏叠在壳内）、更多=Settings 式分组列表（强提醒/评分/评语/改单/邀请/总管组/账户），点进复用现有页面。
+- 双角色：更多里「切换到员工端」进 EmployeePage 全屏（顶栏返回食堂工作台），不重登。
+
+## 10. 已确认
 
 1. 只做 **Android**；鸿蒙暂缓。
 2. 第一版 = **员工端（竖屏）完整功能**（§2.2）；工作台日后另行设计为竖屏。
