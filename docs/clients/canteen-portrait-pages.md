@@ -59,7 +59,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S5_RATING` / `S5_COMMENT`：评分汇总 / 评语（只读分支；评语无删除转移）。
 - `S5_OVERRIDE`：截止后改单（需 `meal.admin_override`），最小子转移：
   `OV_LOAD(target) --载入成功--> OV_EDIT --改--> OV_SAVE --保存成功--> OV_EDIT'`；
-  `--载入失败--> OV_LOAD`（重试）或 `--返回--> S5_MORE`；`--保存失败--> OV_EDIT`（可重试）。
+  载入/保存失败均无独立处理（无 try/catch；静默停留，重拉靠切食堂/切日/重进）。
 - `S5_ACCOUNT`：账户（人人可进；`username` 只读，改 `display_name`）；`S5_DEVICE`（Web 需 `device.approve`）。
 - 总管组（后置；边存在条件＝对应权限码；Web 已有 / Android 未做）：
   `S5_EXPORT`（`export.run`）／`S5_AUDIT`（`audit.read`）／`S5_EMAIL`（`system.super`）／
@@ -217,10 +217,9 @@ stateDiagram-v2
   S5_MORE --> S5_OVERRIDE : 有meal.admin_override
   S5_OVERRIDE --> OV_LOAD : 进入
   OV_LOAD --> OV_EDIT : 载入成功
-  OV_LOAD --> OV_LOAD : 载入失败重试
   OV_LOAD --> S5_MORE : 返回
   OV_EDIT --> OV_SAVE : 改
-  OV_SAVE --> OV_EDIT : 保存成功/失败
+  OV_SAVE --> OV_EDIT : 保存成功(失败静默停留)
   OV_EDIT --> S5_MORE : 返回
   S5_OVERRIDE --> S5_MORE : 返回
   S5_MORE --> S5_ACCOUNT : 恒有
