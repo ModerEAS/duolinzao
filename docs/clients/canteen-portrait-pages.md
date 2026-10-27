@@ -55,8 +55,8 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 ### S5 反馈与管理（更多子节点）
 
 - `S5_MORE`：更多根（各子项按权限码显隐，空组不出现）。
-- `S5_ALERT`：强提醒（待处理项集合；本节点**无下架转移**，只有 `→ S4_EDIT(id)` 转移）。
-- `S5_RATING` / `S5_COMMENT`：评分汇总 / 评语（只读分支；评语无硬删转移）。
+- `S5_ALERT`：强提醒（只读节点：表格＋刷新；无下架转移，去停用深链未实现，停用走菜谱列表/编辑）。
+- `S5_RATING` / `S5_COMMENT`：评分汇总 / 评语（只读分支；评语无删除转移）。
 - `S5_OVERRIDE`：截止后改单（需 `meal.admin_override`），最小子转移：
   `OV_LOAD(target) --载入成功--> OV_EDIT --改--> OV_SAVE --保存成功--> OV_EDIT'`；
   `--载入失败--> OV_LOAD`（重试）或 `--返回--> S5_MORE`；`--保存失败--> OV_EDIT`（可重试）。
@@ -66,7 +66,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
   `S5_THRESHOLD`（`rating.strong_alert_config`）／`S5_RECOVER`（`user.recover`）／
   `S5_LLM`（`system.super`）／`S5_APP_SIGN`（`system.super`）／`S5_CREATE_CANTEEN`（超管；仅宽屏 sidebar 有入口，竖屏无此边）。
 
-### S6 邀请码（一次性）
+### S6 邀请码（明文展示一次，可多次注册）
 
 - `S6_LIST`：已有码集合（逐码 `∈ {使用中, 已用完, 已作废}`，由 `used_count/max_uses/revoked_at` 决定）。
 - `S6_EDIT`：创建参数态（角色 `∈ {员工,食堂}`，食堂范围，次数；canteen 码必须≥1 食堂范围，employee 码须空范围）。
@@ -82,7 +82,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 
 ## 2. 状态变化（转移）
 
-`源 --事件/条件--> 目标`。权限不足的转移直接不存在（节点不可达），不做“点了再报错”的分支。
+`源 --事件/条件--> 目标`。权限不足的转移直接不存在（节点不可达；宽屏条目隐藏，竖屏见 S3/S4 的失败 toast 说明）。
 
 ### T0 会话/路由
 
@@ -132,7 +132,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
   `--取消--> S4_EDIT(id, on)`。
 - `S4_LIST(f) --列表拉取失败--> S4_ERROR(f) --重进页/切范围--> S4_LIST(f)`。
 - `off → on` 不经确认：`S4_EDIT(id, off) --开启用--> S4_SAVING`；仅 `on → off` 必经 `S4_CONFIRM_OFF`。
-- `S5_ALERT --去停用 id--> S4_EDIT(id)`（唯一出边，不存在列表直接下架的转移）。
+- `S5_ALERT` 无出边（去停用深链未实现；“系统不自动下架”，人工评估后走菜谱停用）。
 - `¬menu.write --宽屏--> “编辑菜”条目隐藏；--竖屏/列表--> S4_LIST 照常进，写操作失败 toast`。
 
 ### T5 更多/反馈/管理/账户
@@ -146,7 +146,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
   超管找回则吊销全部含当前 → `S0_LOGIN`）。
 - 检查更新：本期状态机不含（竖屏更多无此节点；更新能力在员工端复用）。
 - 强提醒门闩：`S5_ALERT` 无 `→停用` 边，只能 `→ S4_EDIT`。
-- 评语门闩：无硬删边；无“无分评语”状态（不可只评不打分）。
+- 评语门闩：无删除转移（Web 明示“评语不能删除”）。
 
 ### T6 邀请码
 
@@ -205,7 +205,6 @@ stateDiagram-v2
   S4_SAVING --> S4_LIST : 成功
   S0_CANTEEN --> S5_MORE : 进更多
   S5_MORE --> S5_ALERT : 有码
-  S5_ALERT --> S4_EDIT : 去停用
   S5_ALERT --> S5_MORE : 返回
   S5_MORE --> S5_RATING : 有码
   S5_RATING --> S5_MORE : 返回
@@ -252,7 +251,7 @@ stateDiagram-v2
 边清单（与图一致）：登录→壳两分支（设计稿的 DENY 页未实现，皆无能力进员工壳）；壳→范围三分支（含 `S1_NONE→S2_EMPTY`）；
 范围→人数拉取（含切食堂完整边）；人数切日/重试环；选菜切周/点格经 LOADING＋ERROR 重试环、
 周视图⇄当餐＋写回环＋下一餐、`NOPERM` 分支（宽屏隐藏/竖屏 toast）；菜谱列表 ERROR（重进页/切范围恢复）、列表⇄编辑、
-`on→off` 经确认（`off→on` 直达写回）、只读分支；强提醒→编辑单向边；
+`on→off` 经确认（`off→on` 直达写回）、只读分支；强提醒只读无出边（去停用深链未实现）；
 更多→各子节点（含总管命名态）→返回；邀请码列表⇄创建/改次数、创建失败自环、作废单向边、
 展示单向链至终态；账户改名自环、改密会话边；双角色双向本地边；壳/更多退出边；`401` 全局边。
 
@@ -266,7 +265,7 @@ stateDiagram-v2
 | S2 人数 `LOADING/READY/ERROR/EMPTY`＋整日锁＋切食堂边 | 已接 | 已接真数据；EMPTY/切食堂绑定见 §2 T2 如实注 | C1 |
 | S3 周视图(w)/切周/LOADING/ERROR/当餐/写回环/下一餐，NOPERM 分支 | 已接 | 未做（无此状态） | C3 |
 | S4 列表/ERROR/编辑/确认停用（仅 on→off，off→on 直达）/写回环，只读分支 | 已接 | 未做（无此状态） | C2 |
-| S5 强提醒→编辑单向边（无直接下架边） | 已接 | 未做 | C4 |
+| S5 强提醒只读（去停用深链未实现） | 已接 | 未做 | C4 |
 | S5 评分/评语只读分支 | 已接 | 未做 | C4 |
 | S5 改单分支（`meal.admin_override`） | 已接 | 未做 | C5 |
 | S6 创建→未展示→已展示终态（无回边） | 已接 | 未做 | C5 |
