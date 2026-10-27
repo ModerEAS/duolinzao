@@ -3,6 +3,7 @@
 > 本文只写**状态 / 转移 / 跳转 / 业务门闩**，不写视觉、布局、字号、截图对照、人体工程学。
 > 行为权威仍以一期需求 `docs/requirements-phase1.md` 为准；设计见同目录 `canteen-portrait.md`（已合入）。
 > 约定：`me = GET /api/me`；`W = 工作台能力`；`401 = 会话失效`。
+> 范围：本文=食堂竖屏工作台（含宽屏对照注）；不含员工壳内部页状态机；登录方法子状态不含。
 
 ## 1. 状态列表
 
@@ -71,7 +72,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S6_LIST`：已有码集合（逐码 `∈ {使用中, 已用完, 已作废}`，由 `used_count/max_uses/revoked_at` 决定）。
 - `S6_EDIT`：创建参数态（角色 `∈ {员工,食堂}`，食堂范围，次数；canteen 码必须≥1 食堂范围，employee 码须空范围）。
 - `S6_CREATED_UNSHOWN`：已创建、码未展示。
-- `S6_SHOWN`：已展示一次（**终态**：无转移能回到可展示，刷新/重进也不重显）。
+- `S6_SHOWN`：已展示一次（码不再重显；关对话框回 `S6_LIST`）。
 - `S6_REVOKED(id)`：已作废（终态，不可再用于注册）。
 
 ### S7 双角色位置
@@ -93,6 +94,7 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S0_LOADING --未登录--> S0_LOGIN`。
 - `S0_LOGIN --登录/注册成功 ∧ me(W)--> S0_CANTEEN`；`--登录/注册成功 ∧ me(仅员工)--> S0_EMPLOYEE`。
 - `ANY --401--> S0_EXPIRED --清会话--> S0_LOGIN`。
+- `S0_CANTEEN --页签事件--> S0_CANTEEN`（人数⇄选菜⇄菜谱⇄更多；仅 sub===tabs，子页中底栏隐藏）。
 
 ### T1 范围
 
@@ -128,11 +130,12 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S4_LIST(f) --切分组 f'--> S4_LIST(f')`。
 - `S4_LIST --点行 id--> S4_EDIT(id)`；`--新建--> S4_EDIT(∅)`（新建＝空 `id`，默认 `启用=on`）。
 - `S4_EDIT --保存--> S4_SAVING --成功--> S4_LIST`；失败回 `S4_EDIT`。
+- `S4_EDIT --取消--> S4_LIST`（emit back，与保存成功回列表区分）。
 - `S4_EDIT(id, on) --关启用--> S4_CONFIRM_OFF(id) --确认--> S4_SAVING --成功--> S4_LIST`；
   `--取消--> S4_EDIT(id, on)`。
 - `S4_LIST(f) --列表拉取失败--> S4_ERROR(f) --重进页/切范围--> S4_LIST(f)`。
 - `off → on` 不经确认：`S4_EDIT(id, off) --开启用--> S4_SAVING`；仅 `on → off` 必经 `S4_CONFIRM_OFF`。
-- `S5_ALERT` 无出边（去停用深链未实现；“系统不自动下架”，人工评估后走菜谱停用）。
+- `S5_ALERT` 只读（仅返回更多；去停用深链未实现；“系统不自动下架”，人工评估后走菜谱停用）。
 - `¬menu.write --宽屏--> “编辑菜”条目隐藏；--竖屏/列表--> S4_LIST 照常进，写操作失败 toast`。
 
 ### T5 更多/反馈/管理/账户
@@ -140,18 +143,19 @@ rating.strong_alert_config, user.recover} ≠ ∅`。
 - `S0_CANTEEN --进更多--> S5_MORE --选子项--> {S5_ALERT, S5_RATING, S5_COMMENT, S5_OVERRIDE,
   S6_LIST, S5_ACCOUNT, S5_DEVICE, 总管子节点}`（子项存在 ⟺ 对应权限码持有；无码则边不存在）。
 - 子节点 `--返回--> S5_MORE`。
+- `S5_ACCOUNT --打开设备页--> S5_DEVICE`（`AccountPage @open-devices`）。
 - `S5_MORE --退出登录--> S0_LOGIN`（退出事件清会话；确认框属 UI，不入状态机）。
 - `S5_ACCOUNT --改显示名成功--> S5_ACCOUNT`（名称更新，会话不变）。
 - `S5_ACCOUNT --自助改密成功--> S5_ACCOUNT`（保留当前会话，吊销该账号其它全部会话；
   超管找回则吊销全部含当前 → `S0_LOGIN`）。
 - 检查更新：本期状态机不含（竖屏更多无此节点；更新能力在员工端复用）。
-- 强提醒门闩：`S5_ALERT` 无 `→停用` 边，只能 `→ S4_EDIT`。
+- 强提醒门闩：`S5_ALERT` 只读，仅返回更多（去停用深链未实现）。
 - 评语门闩：无删除转移（Web 明示“评语不能删除”）。
 
 ### T6 邀请码
 
 - `S6_EDIT --创建成功--> S6_CREATED_UNSHOWN --首次展示--> S6_SHOWN`。
-- `S6_SHOWN` 无出边（返回/重进/刷新均不重显；需新码重走 `S6_EDIT`）。
+- `S6_SHOWN --关闭对话框--> S6_LIST`（码不重显；需新码重走 `S6_EDIT`）。
 - `S6_EDIT --创建失败--> S6_EDIT`（参数保留，可改后重试）。
 - `S6_LIST --作废 id--> S6_REVOKED(id)`（需确认；单向，不可恢复）。
 - `S6_LIST --改次数（≥已用次数；改到等于已用即用尽）--> S6_LIST`。
@@ -202,8 +206,10 @@ stateDiagram-v2
   S4_CONFIRM_OFF --> S4_SAVING : 确认
   S4_CONFIRM_OFF --> S4_EDIT : 取消
   S4_EDIT --> S4_SAVING : 保存/开启用
+  S4_EDIT --> S4_LIST : 取消
   S4_SAVING --> S4_LIST : 成功
   S0_CANTEEN --> S5_MORE : 进更多
+  S0_CANTEEN --> S0_CANTEEN : 页签互切(人数/选菜/菜谱/更多)
   S5_MORE --> S5_ALERT : 有码
   S5_ALERT --> S5_MORE : 返回
   S5_MORE --> S5_RATING : 有码
@@ -211,9 +217,17 @@ stateDiagram-v2
   S5_MORE --> S5_COMMENT : 有码
   S5_COMMENT --> S5_MORE : 返回
   S5_MORE --> S5_OVERRIDE : 有meal.admin_override
+  S5_OVERRIDE --> OV_LOAD : 进入
+  OV_LOAD --> OV_EDIT : 载入成功
+  OV_LOAD --> OV_LOAD : 载入失败重试
+  OV_LOAD --> S5_MORE : 返回
+  OV_EDIT --> OV_SAVE : 改
+  OV_SAVE --> OV_EDIT : 保存成功/失败
+  OV_EDIT --> S5_MORE : 返回
   S5_OVERRIDE --> S5_MORE : 返回
   S5_MORE --> S5_ACCOUNT : 恒有
   S5_ACCOUNT --> S5_MORE : 返回
+  S5_ACCOUNT --> S5_DEVICE : 打开设备页
   S5_MORE --> S5_DEVICE : 有device.approve
   S5_DEVICE --> S5_MORE : 返回
   S5_MORE --> S5_EXPORT : 有export.run(后置)
@@ -233,16 +247,19 @@ stateDiagram-v2
   S5_APP_SIGN --> S5_MORE : 返回
   S5_CREATE_CANTEEN --> S5_MORE : 返回
   S5_MORE --> S6_LIST : 有user.invite
+  S6_LIST --> S5_MORE : 返回
   S6_LIST --> S6_EDIT : 新建
   S6_EDIT --> S6_CREATED_UNSHOWN : 创建成功
   S6_EDIT --> S6_EDIT : 创建失败
   S6_CREATED_UNSHOWN --> S6_SHOWN : 首次展示
+  S6_SHOWN --> S6_LIST : 关闭
   S6_LIST --> S6_REVOKED : 作废
   S6_LIST --> S6_LIST : 改次数
   S6_LIST --> S6_LIST : 凭码注册计数++
   S0_CANTEEN --> S0_EMPLOYEE : 切员工端(本地)
   S0_EMPLOYEE --> S0_CANTEEN : 回工作台(本地)
   S0_CANTEEN --> S0_LOGIN : 退出
+  S5_MORE --> S0_EMPLOYEE : 切换到员工端
   S5_MORE --> S0_LOGIN : 退出
   ANY --> S0_EXPIRED : 401
   S0_EXPIRED --> S0_LOGIN : 清会话
@@ -251,9 +268,11 @@ stateDiagram-v2
 边清单（与图一致）：登录→壳两分支（设计稿的 DENY 页未实现，皆无能力进员工壳）；壳→范围三分支（含 `S1_NONE→S2_EMPTY`）；
 范围→人数拉取（含切食堂完整边）；人数切日/重试环；选菜切周/点格经 LOADING＋ERROR 重试环、
 周视图⇄当餐＋写回环＋下一餐、`NOPERM` 分支（宽屏隐藏/竖屏 toast）；菜谱列表 ERROR（重进页/切范围恢复）、列表⇄编辑、
-`on→off` 经确认（`off→on` 直达写回）、只读分支；强提醒只读无出边（去停用深链未实现）；
-更多→各子节点（含总管命名态）→返回；邀请码列表⇄创建/改次数、创建失败自环、作废单向边、
-展示单向链至终态；账户改名自环、改密会话边；双角色双向本地边；壳/更多退出边；`401` 全局边。
+`on→off` 经确认（`off→on` 直达写回）、编辑取消回列表、只读分支；强提醒只读无出边（去停用深链未实现）；
+底栏四页签经页签事件互切（仅 sub===tabs，子页底栏隐藏）；
+更多→各子节点（含总管命名态）→返回，账户→设备，改单 OV 载入→改→保存子环，更多→员工端；
+邀请码列表⇄创建/改次数、创建失败自环、作废单向边、展示后关闭回列表（码不重显）；
+账户改名自环、改密会话边；双角色双向本地边；壳/更多退出边；`401` 全局边。
 
 ## 4. 实现对照（状态覆盖）
 
