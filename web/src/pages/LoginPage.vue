@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { ApiError, api, type Me } from "../api";
 import { refreshSession } from "../session";
 import { appVersion, loadVersion } from "../version";
+import { unwrapPublicKey } from "../webauthn";
 
 const emit = defineEmits<{ enter: [] }>();
 
@@ -98,11 +99,11 @@ async function passkeyLogin() {
     return;
   }
   try {
-    const started = await api<{ challenge_id: string; publicKey: PublicKeyCredentialRequestOptions }>(
+    const started = await api<{ challenge_id: string; publicKey: Record<string, unknown> }>(
       "/api/session/passkey/start",
       { method: "POST", body: JSON.stringify({ username: username.value }) },
     );
-    const publicKey = prepareRequest(started.publicKey);
+    const publicKey = prepareRequest(unwrapPublicKey(started) as unknown as PublicKeyCredentialRequestOptions);
     const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
     if (!credential) return;
     await api("/api/session/passkey/finish", {
