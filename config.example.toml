@@ -49,6 +49,9 @@ cookie_secure = true
 # 否则所有请求都会记成网关 IP，限流会误伤。开关关闭时绝不读这些头，防客户端伪造。
 trust_proxy = false
 static_dir = ""
+# 启动自动签名（A 方案）：进程就绪后若镜像里是未签包且库里已有 keystore，自动签名发布。
+# 缺省 true；改 false 则每次部署后都要超管手动点「签名发布」。也可用 DLZ_APK_AUTO_SIGN=false 关。
+# apk_auto_sign = true
 
 [database]
 url = "postgres://duolinzao:duolinzao@127.0.0.1:5432/duolinzao"

@@ -8,6 +8,12 @@ interface SigningStatus {
   key_alias?: string | null;
   keystore_sha256?: string | null;
   updated_at?: string | null;
+  release?: {
+    version_code: number;
+    version_name: string;
+    signing: string;
+    sha256: string;
+  } | null;
 }
 
 interface SignResult {
@@ -145,8 +151,10 @@ onMounted(load);
         <span>别名：{{ status.key_alias }}</span>
         <span class="mono">keystore 指纹：{{ status.keystore_sha256 }}</span>
       </div>
+      <p v-if="ready && status.release" class="muted">已发布：versionCode {{ status.release.version_code }}（{{ status.release.version_name }}，signing={{ status.release.signing }}）。</p>
+      <p v-else-if="ready" class="muted">暂无已发布的包：新镜像就绪后会自动签名发布，也可手动点「签名并发布」。</p>
       <el-alert type="warning" show-icon :closable="false" title="签名材料只活在数据库。数据库备份即包含签名密钥，备份必须离线保护；换 keystore 后已装设备只能卸载重装。" />
-      <el-alert type="info" show-icon :closable="false" title="每次部署新镜像后要点一次「签名发布」，否则 /app/* 还是未签包。" />
+      <el-alert type="info" show-icon :closable="false" title="每次部署新镜像后会自动签名发布（启动自检；失败时看服务端日志，也可在这里手动点）。" />
     </div>
     <div class="card box">
       <strong>上传 / 覆盖 keystore（随时可换成自己的）</strong>

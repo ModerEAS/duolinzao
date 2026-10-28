@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use duolinzao::config::AppConfig;
 use duolinzao::ops::meal;
-use duolinzao::ops::session;
+use duolinzao::ops::{app_signing, session};
 use duolinzao::router;
 use duolinzao::state::AppState;
 use sqlx::postgres::PgPoolOptions;
@@ -42,6 +42,11 @@ async fn main() -> anyhow::Result<()> {
     });
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "多邻灶已启动");
+    // A 方案：就绪后再自检签名（后台跑，不阻塞健康检查；失败只记日志）。
+    let auto_sign = state.clone();
+    tokio::spawn(async move {
+        app_signing::auto_sign_on_boot(&auto_sign).await;
+    });
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

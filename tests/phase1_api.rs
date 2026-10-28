@@ -2630,6 +2630,67 @@ async fn app_signing_keystore_in_db() {
 }
 
 #[tokio::test]
+async fn apk_boot_auto_sign_skips_without_keystore() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    // 未签暂存包夹具（公共 prepare 不配静态目录，自建带 app_dir 的 state）。
+    let base = std::env::temp_dir().join("duolinzao-phase1-boot-sign");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("app")).unwrap();
+    let apk = b"fake-apk-bytes";
+    std::fs::write(base.join("app/duolinzao.apk"), apk).unwrap();
+    std::fs::write(
+        base.join("app/version.json"),
+        r#"{"versionCode":7,"versionName":"0.1.6","url":"/app/duolinzao.apk","sha256":"abc","signing":"unsigned"}"#,
+    )
+    .unwrap();
+    let raw_cfg = example_config().replace(
+        "[server]",
+        &format!("[server]\nstatic_dir = \"{}\"", base.to_str().unwrap()),
+    );
+    let state = AppState::new(
+        api.pool.clone(),
+        AppConfig::parse(&raw_cfg).unwrap(),
+        Arc::new(ManualClock::new(
+            Utc.with_ymd_and_hms(2026, 10, 10, 2, 0, 0).single().unwrap(),
+        )),
+        api.mailer.clone(),
+        Arc::new(api.scripts.clone()),
+    )
+    .unwrap();
+    // 空库：启动自检必须 skip，不自动 generate（不碰 keytool/apksigner，无 JRE 也能跑）。
+    duolinzao::ops::app_signing::auto_sign_on_boot(&state).await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM app_signing")
+        .fetch_one(&api.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "空库启动自检不得自动建 keystore");
+    let text = std::fs::read_to_string(base.join("app/version.json")).unwrap();
+    assert!(text.contains("\"unsigned\""), "暂存包应原样未动，{text}");
+
+    // 已发布且 sha 自洽：同样不动手（坏了走手动「签名发布」修）。
+    let sha = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(apk))
+    };
+    std::fs::write(
+        base.join("app/version.json"),
+        format!(
+            r#"{{"versionCode":7,"versionName":"0.1.6","url":"/app/duolinzao.apk","sha256":"{sha}","signing":"release"}}"#
+        ),
+    )
+    .unwrap();
+    duolinzao::ops::app_signing::auto_sign_on_boot(&state).await;
+    let text = std::fs::read_to_string(base.join("app/version.json")).unwrap();
+    assert!(text.contains(&sha), "已发布包应原样未动，{text}");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM app_signing")
+        .fetch_one(&api.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "已发布时不得建 keystore");
+}
+
+#[tokio::test]
 async fn app_signing_auto_generate_sign_and_overwrite() {
     let _gate = GATE.lock().await;
     let api = prepare().await;

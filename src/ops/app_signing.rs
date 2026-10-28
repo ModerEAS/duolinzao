@@ -10,7 +10,7 @@ use crate::extract::CurrentUser;
 use crate::rbac::{AuthHit, authorize, Perm};
 use crate::state::AppState;
 
-use super::audit_user;
+use super::{audit, audit_user};
 
 /// 超管应用签名：签名材料只活在数据库（`app_signing` 单例行），空库时点「签名发布」
 /// 自动生成一把（`keytool -genkeypair`，release 级 RSA），超管也可随时上传/覆盖自己的；
@@ -239,16 +239,41 @@ pub async fn generate_keystore(state: &AppState, user: &CurrentUser) -> Result<V
         ));
     }
     let (alias, fingerprint) = generate_and_store(state, user, &hit).await?;
-    Ok(status_body(true, Some(&alias), Some(&fingerprint), None))
+    Ok(status_body(true, Some(&alias), Some(&fingerprint), None, published_release(state)))
 }
 
-fn status_body(configured: bool, alias: Option<&str>, fingerprint: Option<&str>, updated: Option<&str>) -> Value {
+fn status_body(
+    configured: bool,
+    alias: Option<&str>,
+    fingerprint: Option<&str>,
+    updated: Option<&str>,
+    release: Option<Value>,
+) -> Value {
     json!({
         "configured": configured,
         "key_alias": alias,
         "keystore_sha256": fingerprint,
         "updated_at": updated,
+        // 当前已发布的包（version.json 实况）：超管一眼确认启动自签是否生效。
+        "release": release,
     })
+}
+
+/// 已发布的包实况（读 `{app_dir}/version.json`）：无目录/无包/非法时为 None。
+/// sha256 是公开包的完整性哈希（version.json 本来就直出），可安全回显。
+fn published_release(state: &AppState) -> Option<Value> {
+    let dir = state.config.resolved_app_dir()?;
+    let text = std::fs::read_to_string(format!("{dir}/version.json")).ok()?;
+    let meta: Value = serde_json::from_str(&text).ok()?;
+    if meta.get("versionCode").and_then(Value::as_i64).unwrap_or(0) <= 0 {
+        return None;
+    }
+    Some(json!({
+        "version_code": meta.get("versionCode").cloned().unwrap_or(json!(0)),
+        "version_name": meta.get("versionName").and_then(Value::as_str).unwrap_or(""),
+        "signing": meta.get("signing").and_then(Value::as_str).unwrap_or("unsigned"),
+        "sha256": meta.get("sha256").and_then(Value::as_str).unwrap_or(""),
+    }))
 }
 
 pub async fn status(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
@@ -257,7 +282,7 @@ pub async fn status(state: &AppState, user: &CurrentUser) -> Result<Value, AppEr
         .fetch_optional(&state.pool)
         .await?;
     let Some(row) = row else {
-        return Ok(status_body(false, None, None, None));
+        return Ok(status_body(false, None, None, None, published_release(state)));
     };
     // 指纹要读 keystore 本体：只在已配置时多查一次，不把本体带出本函数。
     let fingerprint: Option<String> =
@@ -278,6 +303,7 @@ pub async fn status(state: &AppState, user: &CurrentUser) -> Result<Value, AppEr
                 .to_rfc3339()
                 .as_str(),
         ),
+        published_release(state),
     ))
 }
 
@@ -323,23 +349,13 @@ pub async fn put_keystore(
         json!({"alias": alias, "fingerprint": fingerprint, "file_bytes": keystore.len(), "replaced": existed}),
     )
     .await?;
-    Ok(status_body(true, Some(&alias), Some(&fingerprint), None))
+    Ok(status_body(true, Some(&alias), Some(&fingerprint), None, published_release(state)))
 }
 
-pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
-    let hit = authorize(&user.assignments, Perm::SystemSuper, None)?;
-    // 空库时先自动生成一把入库再签（已有则不动）；响应带 keystore_generated 供 UI 提示，
-    // 审计记 auto_generated（sanitize 会剥掉含 "key" 子串的键）。
-    let (signing, generated) = match load_row(&state.pool, &state.config.local_key).await? {
-        Some(row) => (row, false),
-        None => {
-            generate_and_store(state, user, &hit).await?;
-            let row = load_row(&state.pool, &state.config.local_key)
-                .await?
-                .ok_or_else(AppError::internal)?;
-            (row, true)
-        }
-    };
+/// 已有 keystore 时的纯签名发布：给当前镜像里的未签包签名并写出正式 version.json。
+/// 与 HTTP「签名发布」同一代码路径，启动钩子复用；调用方负责鉴权/审计与空库策略。
+/// 密码只走进程环境进 apksigner（argv/`ps` 不可见），永不进日志与审计。
+async fn sign_staged(state: &AppState, signing: &SigningRow) -> Result<Value, AppError> {
     let Some(dir) = state.config.resolved_app_dir() else {
         return Err(AppError::bad("app_dir_missing", "服务端未配置静态目录"));
     };
@@ -430,6 +446,30 @@ pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value,
         ),
     )
     .map_err(|_| AppError::internal())?;
+    Ok(json!({
+        "versionCode": version_code,
+        "versionName": version_name,
+        "url": url,
+        "sha256": sha256,
+        "signing": "release",
+    }))
+}
+
+pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {
+    let hit = authorize(&user.assignments, Perm::SystemSuper, None)?;
+    // 空库时先自动生成一把入库再签（已有则不动）；响应带 keystore_generated 供 UI 提示，
+    // 审计记 auto_generated（sanitize 会剥掉含 "key" 子串的键）。
+    let (signing, generated) = match load_row(&state.pool, &state.config.local_key).await? {
+        Some(row) => (row, false),
+        None => {
+            generate_and_store(state, user, &hit).await?;
+            let row = load_row(&state.pool, &state.config.local_key)
+                .await?
+                .ok_or_else(AppError::internal)?;
+            (row, true)
+        }
+    };
+    let mut body = sign_staged(state, &signing).await?;
     let fingerprint = keystore_fingerprint(&signing.keystore);
     audit_user(
         state,
@@ -439,21 +479,127 @@ pub async fn sign_release(state: &AppState, user: &CurrentUser) -> Result<Value,
         Some("app_signing"),
         None,
         json!({
-            "alias": alias,
+            "alias": signing.key_alias,
             "fingerprint": fingerprint,
-            "version": version_code,
-            "apk_sha256": sha256,
+            "version": body.get("versionCode").cloned().unwrap_or(json!(0)),
+            "apk_sha256": body.get("sha256").and_then(Value::as_str).unwrap_or(""),
             "signing": "release",
             "auto_generated": generated,
         }),
     )
     .await?;
-    Ok(json!({
-        "versionCode": version_code,
-        "versionName": version_name,
-        "url": url,
-        "sha256": sha256,
-        "signing": "release",
-        "keystore_generated": generated,
-    }))
+    if let Some(map) = body.as_object_mut() {
+        map.insert("keystore_generated".to_string(), json!(generated));
+    }
+    Ok(body)
+}
+
+/// 启动自检（A 方案）：进程就绪后调一次。若镜像里是未签包且库里已有 keystore，
+/// 自动签名发布；空库默认 skip + 告警（不自动 generate，超管手动点一次即建 key）。
+/// 永不阻塞启动、永不抛错：失败只记日志，靠超管手动「签名发布」兜底。
+/// 签名产物写同一 `{app_dir}`（stop-first 单副本，原地 rename，与手动路径一致）。
+pub async fn auto_sign_on_boot(state: &AppState) {
+    if !state.config.apk_auto_sign {
+        tracing::debug!("apk auto sign disabled");
+        return;
+    }
+    let Some(dir) = state.config.resolved_app_dir() else {
+        tracing::debug!("apk auto sign skipped: 未配 app 目录（本地构建）");
+        return;
+    };
+    let text = match std::fs::read_to_string(format!("{dir}/version.json")) {
+        Ok(text) => text,
+        Err(_) => return, // 无包可签：本地构建或产物目录为空
+    };
+    let meta: Value = match serde_json::from_str(&text) {
+        Ok(meta) => meta,
+        Err(_) => {
+            tracing::warn!("apk auto sign skipped: version.json 非法");
+            return;
+        }
+    };
+    if !needs_sign(&meta) {
+        // 已发布：只做 sha 自洽检查，不动手（坏了走手动「签名发布」修，
+        // 避免对已签名包重复签名把事情搞大）。
+        if meta.get("signing").and_then(Value::as_str) == Some("release") {
+            let consistent = std::fs::read(format!("{dir}/duolinzao.apk"))
+                .map(|bytes| hex::encode(Sha256::digest(&bytes)))
+                .map(|sha| Some(sha.as_str()) == meta.get("sha256").and_then(Value::as_str))
+                .unwrap_or(false);
+            if !consistent {
+                tracing::warn!("apk 已发布但 version.json 与 apk 不一致，请手动点「签名发布」修复");
+            }
+        }
+        return;
+    }
+    let signing = match load_row(&state.pool, &state.config.local_key).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            tracing::warn!("apk auto sign skipped: keystore 未配置，空库默认不自动生成（请超管点一次「签名发布」）");
+            return;
+        }
+        Err(err) => {
+            tracing::warn!(error = %err.message, "apk auto sign skipped: 读签名材料失败");
+            return;
+        }
+    };
+    match sign_staged(state, &signing).await {
+        Ok(body) => {
+            tracing::info!(
+                version = %body.get("versionCode").cloned().unwrap_or(json!(0)),
+                sha256 = %body.get("sha256").and_then(|item| item.as_str()).unwrap_or(""),
+                "apk auto signed on boot",
+            );
+            // 无人值守：记一条无 actor 的审计（actor 为空，不是哪个超管点的）。
+            // 字段名避开 sanitize 子串（"key"/"code" 整键剥掉），只用 alias/fingerprint。
+            if let Err(err) = audit(
+                state,
+                None,
+                None,
+                None,
+                "app_sign_release",
+                Some("app_signing"),
+                None,
+                json!({
+                    "alias": signing.key_alias,
+                    "fingerprint": keystore_fingerprint(&signing.keystore),
+                    "version": body.get("versionCode").cloned().unwrap_or(json!(0)),
+                    "apk_sha256": body.get("sha256").and_then(Value::as_str).unwrap_or(""),
+                    "signing": "release",
+                    "auto": true,
+                }),
+                "ok",
+            )
+            .await
+            {
+                tracing::warn!(error = %err.message, "apk auto sign 审计落库失败（签名本身已发布）");
+            }
+        }
+        Err(err) => tracing::warn!(error = %err.message, code = %err.code, "apk auto sign failed"),
+    }
+}
+
+/// 启动自检的触发条件（纯函数）：暂存包有效（versionCode>0）且尚未正式发布。
+fn needs_sign(meta: &Value) -> bool {
+    meta.get("versionCode").and_then(Value::as_i64).unwrap_or(0) > 0
+        && meta.get("signing").and_then(Value::as_str) != Some("release")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsigned_staged_triggers_sign() {
+        assert!(needs_sign(&json!({"versionCode": 7, "signing": "unsigned"})));
+        // 新镜像的 version.json 可能根本没 signing 字段：同样要签。
+        assert!(needs_sign(&json!({"versionCode": 7})));
+    }
+
+    #[test]
+    fn released_or_empty_does_not_trigger() {
+        assert!(!needs_sign(&json!({"versionCode": 7, "signing": "release"})));
+        assert!(!needs_sign(&json!({"versionCode": 0, "signing": "unsigned"})));
+        assert!(!needs_sign(&json!({})));
+    }
 }
