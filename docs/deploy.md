@@ -101,7 +101,7 @@ deploy job 条件：主仓 + `refs/heads/master` + `push` 事件。fork 的 mast
 
 1. `test` / `e2e` / `e2e-scale` 全绿 → `image` 构建并推 `ghcr.io/moderras/duolinzao:sha-<commit>`（+ `latest`）。
 2. `deploy`：算 `CONFIG_VERSION`（`deploy/config.toml` 的 sha256 前 12 位，配置一改名一变即触发服务更新），scp `stack.yml` + `config.toml` 到 `DEPLOY_PATH`；`IMAGE_TAG`/`DLZ_DOMAIN`/Traefik 四变量/`CONFIG_VERSION` 注入后 `docker stack deploy -c stack.yml --with-registry-auth duolinzao`。
-3. 轮询 `duolinzao_app`：spec 或运行中任务的镜像以新 tag 为前缀即可（允许 Swarm 解析后的 `@sha256:...`），且有 Running 任务、`UpdateStatus` 非 rollback/paused（10 分钟超时即失败；`failure_action: rollback` 已由 Swarm 自动回滚）。
+3. 先轮询 `duolinzao_db`：有 Running 任务且 `UpdateStatus` 非 rollback/paused（约 2 分钟超时即失败）；再轮询 `duolinzao_app`：spec 或运行中任务的镜像以新 tag 为前缀即可（允许 Swarm 解析后的 `@sha256:...`），且有 Running 任务、`UpdateStatus` 非 rollback/paused（10 分钟超时即失败；`failure_action: rollback` 已由 Swarm 自动回滚）。db 用 start-first（新 db 起来后再停旧的，overlay 上 `db` VIP 不断），否则与 app 同次发版时 app 会因 `db` 解析失败（Name or service not known）直接 exit 1；app 保持 stop-first（内存限制）。
 4. runner `curl https://域名/healthz` 重试 5 分钟。
 5. `docker image prune -f` 清旧镜像。
 
@@ -161,7 +161,7 @@ manager 上仍需手工做两件事：建好 staging 数据目录（各会跑 ap
 
 ### 6.4 部署与验证
 
-每次 master push 全绿后自动：检查配置 → 确保 5 个 `dlz_stg_*` secret（缺才建）→ scp `stack.staging.yml` + `config.staging.toml`（随即在远端改名为 `stack.yml` / `config.toml`，与生产同形；stack 文件里的 `file: ./config.toml` 与改名后一致）→ `docker stack deploy ... duolinzao-staging` → 轮询 `duolinzao-staging_app` 收敛 → `curl https://staging 域名/healthz`。生产发布流程不变。
+每次 master push 全绿后自动：检查配置 → 确保 5 个 `dlz_stg_*` secret（缺才建）→ scp `stack.staging.yml` + `config.staging.toml`（随即在远端改名为 `stack.yml` / `config.toml`，与生产同形；stack 文件里的 `file: ./config.toml` 与改名后一致）→ `docker stack deploy ... duolinzao-staging` → 先等 `duolinzao-staging_db` 就绪（有 Running 且非 rollback/paused）再轮询 `duolinzao-staging_app` 收敛 → `curl https://staging 域名/healthz`。db start-first、app stop-first 与生产一致。生产发布流程不变。
 
 ```bash
 docker stack services duolinzao-staging

@@ -86,6 +86,19 @@ services:
         condition: any
         delay: 5s
         max_attempts: 0
+      # db 用 start-first：新 db 起来后再停旧的，内部 `db` 短名不断解析；
+      # 否则与 app 同次发版时 app 先起、`db` VIP 不可解析，直接 exit 1（生产同理）。
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: pause
+        monitor: 60s
+        max_failure_ratio: 0
+      rollback_config:
+        parallelism: 1
+        order: start-first
+        monitor: 60s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U duolinzao"]
       interval: 10s

@@ -379,7 +379,7 @@ jobs:
           SSH "mkdir -p '${DEPLOY_PATH}'"
           scp -i ~/.ssh/id_deploy -P "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes \
             deploy/stack.yml deploy/config.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
-      - name: 拉镜像并发版（stop-first，失败自动 rollback）
+      - name: 拉镜像并发版（db start-first 失败暂停；app stop-first 失败回滚）
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -398,6 +398,39 @@ jobs:
             printf '%s' "$GHCR_PULL_TOKEN" | SSH "docker login ghcr.io -u '${GHCR_USER}' --password-stdin"
           fi
           SSH "cd '${DEPLOY_PATH}' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_TAG='${IMAGE_TAG}' DLZ_DOMAIN='${DLZ_DOMAIN:-}' TRAEFIK_ENTRYPOINT='${TRAEFIK_ENTRYPOINT:-}' TRAEFIK_CERTRESOLVER='${TRAEFIK_CERTRESOLVER:-}' TRAEFIK_NETWORK='${TRAEFIK_NETWORK:-}' CONFIG_VERSION='${CONFIG_VERSION}' docker stack deploy -c stack.yml --with-registry-auth duolinzao"
+      - name: 等 duolinzao_db 就绪（再收敛 app）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          diagnose() {
+            SVC="$1"
+            echo "===== diagnose ${SVC} ====="
+            SSH "docker service ps '${SVC}' --no-trunc" || true
+            SSH "docker service inspect '${SVC}' --format '{{json .UpdateStatus}}'" || true
+            SSH "docker service logs '${SVC}' --tail 120 2>&1" || true
+            echo "===== end diagnose ====="
+          }
+          # db 已是 start-first，但同次发版 app 仍可能抢跑：先确认 db 有 Running 任务
+          # 且没 rollback/paused，再去收敛 app，避免 `db` VIP 短暂不可解析导致 app exit 1。
+          for _ in $(seq 1 12); do
+            STATE="$(SSH "docker service inspect duolinzao_db --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
+            RUNNING="$(SSH "docker service ps duolinzao_db --filter desired-state=running --format '{{.CurrentState}}'" 2>/dev/null | grep -c "Running" || true)"
+            RUNNING="${RUNNING:-0}"
+            echo "update=${STATE} running=${RUNNING}"
+            case "${STATE}" in
+              *rollback*|*paused*) echo "db 更新失败：${STATE}"; diagnose duolinzao_db; exit 1;;
+            esac
+            if [ "${RUNNING}" -ge 1 ]; then
+              echo DB_READY
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "db 就绪超时"; diagnose duolinzao_db; exit 1
       - name: 等 duolinzao_app 收敛到新镜像（超时失败）
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -577,7 +610,7 @@ jobs:
             deploy/stack.staging.yml deploy/config.staging.toml "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
           # manager 侧文件名统一为 stack.yml / config.toml，deploy 命令与生产同形。
           SSH "cd '${DEPLOY_PATH}' && mv -f stack.staging.yml stack.yml && mv -f config.staging.toml config.toml"
-      - name: 拉镜像并发版（stop-first，失败自动 rollback）
+      - name: 拉镜像并发版（db start-first 失败暂停；app stop-first 失败回滚）
         if: steps.guard.outputs.ready == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -596,6 +629,39 @@ jobs:
             printf '%s' "$GHCR_PULL_TOKEN" | SSH "docker login ghcr.io -u '${GHCR_USER}' --password-stdin"
           fi
           SSH "cd '${DEPLOY_PATH}' && DEPLOY_PATH='${DEPLOY_PATH}' IMAGE_TAG='${IMAGE_TAG}' DLZ_DOMAIN='${DLZ_DOMAIN:-}' TRAEFIK_ENTRYPOINT='${TRAEFIK_ENTRYPOINT:-}' TRAEFIK_CERTRESOLVER='${TRAEFIK_CERTRESOLVER:-}' TRAEFIK_NETWORK='${TRAEFIK_NETWORK:-}' CONFIG_VERSION='${CONFIG_VERSION}' docker stack deploy -c stack.yml --with-registry-auth duolinzao-staging"
+      - name: 等 duolinzao-staging_db 就绪（再收敛 app）
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          SSH() { ssh -i ~/.ssh/id_deploy -p "${DEPLOY_PORT:-22}" -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "$@"; }
+          diagnose() {
+            SVC="$1"
+            echo "===== diagnose ${SVC} ====="
+            SSH "docker service ps '${SVC}' --no-trunc" || true
+            SSH "docker service inspect '${SVC}' --format '{{json .UpdateStatus}}'" || true
+            SSH "docker service logs '${SVC}' --tail 120 2>&1" || true
+            echo "===== end diagnose ====="
+          }
+          # 与生产同理：db start-first 后仍先确认 Running，再收敛 app。
+          for _ in $(seq 1 12); do
+            STATE="$(SSH "docker service inspect duolinzao-staging_db --format '{{.UpdateStatus.State}}'" 2>/dev/null || true)"
+            RUNNING="$(SSH "docker service ps duolinzao-staging_db --filter desired-state=running --format '{{.CurrentState}}'" 2>/dev/null | grep -c "Running" || true)"
+            RUNNING="${RUNNING:-0}"
+            echo "update=${STATE} running=${RUNNING}"
+            case "${STATE}" in
+              *rollback*|*paused*) echo "db 更新失败：${STATE}"; diagnose duolinzao-staging_db; exit 1;;
+            esac
+            if [ "${RUNNING}" -ge 1 ]; then
+              echo DB_READY
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "db 就绪超时"; diagnose duolinzao-staging_db; exit 1
       - name: 等 duolinzao-staging_app 收敛到新镜像（超时失败）
         if: steps.guard.outputs.ready == 'true'
         env:
