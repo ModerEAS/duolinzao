@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { Key, Lock, Message } from "@element-plus/icons-vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { ApiError, api, type Me } from "../api";
 import { refreshSession } from "../session";
@@ -9,23 +8,23 @@ import { unwrapPublicKey } from "../webauthn";
 
 const emit = defineEmits<{ enter: [] }>();
 
+type Screen = "home" | "methods" | "password" | "code" | "email" | "wait" | "register";
+
+const screen = ref<Screen>("home");
 const methods = ref<string[]>(["passkey", "totp", "password"]);
 const emailEnabled = ref(false);
-const showPwd = ref(false);
-const showTotp = ref(false);
-const showEmailOtp = ref(false);
-const showWait = ref(false);
-const showRegister = ref(false);
 const username = ref("");
 const password = ref("");
-const totpUser = ref("");
-const totpCode = ref("");
-const otpUser = ref("");
+const code = ref("");
 const otpCode = ref("");
 const regUser = ref("");
 const regCode = ref("");
 const regPassword = ref("");
 const wait = ref<{ id: string; poll: string; ip: string; ua: string; name: string; status: string } | null>(null);
+
+const account = computed(() => username.value.trim() || "账号");
+const avatar = computed(() => (username.value.trim().slice(0, 1) || "账"));
+const showEmail = computed(() => emailEnabled.value && methods.value.includes("email_otp"));
 
 onMounted(async () => {
   loadVersion();
@@ -36,12 +35,19 @@ onMounted(async () => {
   } catch {
     /* 保持默认顺序 */
   }
-  // 邮箱登录只有验证码一种方式，不再提供 magic link。
 });
 
 async function enter() {
   await refreshSession();
   emit("enter");
+}
+
+function goNext() {
+  if (!username.value.trim()) {
+    document.getElementById("login-username")?.focus();
+    return;
+  }
+  screen.value = "methods";
 }
 
 async function passwordLogin() {
@@ -56,11 +62,11 @@ async function passwordLogin() {
   }
 }
 
-async function totpLogin() {
+async function codeLogin() {
   try {
     await api("/api/session/totp", {
       method: "POST",
-      body: JSON.stringify({ username: totpUser.value, code: totpCode.value }),
+      body: JSON.stringify({ username: username.value, code: code.value }),
     });
     await enter();
   } catch (error) {
@@ -72,7 +78,7 @@ async function requestEmailOtp() {
   try {
     await api("/api/session/email-otp/request", {
       method: "POST",
-      body: JSON.stringify({ username: otpUser.value }),
+      body: JSON.stringify({ username: username.value }),
     });
     ElMessage.success("如果账号已绑定邮箱，验证码已发出");
   } catch (error) {
@@ -84,7 +90,7 @@ async function verifyEmailOtp() {
   try {
     await api("/api/session/email-otp/verify", {
       method: "POST",
-      body: JSON.stringify({ username: otpUser.value, code: otpCode.value }),
+      body: JSON.stringify({ username: username.value, code: otpCode.value }),
     });
     await enter();
   } catch (error) {
@@ -109,7 +115,6 @@ async function passkeyLogin() {
         ElMessage.info("已取消 Passkey 登录");
         return;
       }
-      showPwd.value = true;
       ElMessage.info("没有可用的 Passkey，请用密码登录");
       return;
     }
@@ -124,7 +129,6 @@ async function passkeyLogin() {
     await enter();
   } catch (error) {
     if (error instanceof ApiError && error.code === "passkey_none") {
-      showPwd.value = true;
       ElMessage.info("这个账号还没有 Passkey，请用下面的密码登录");
       return;
     }
@@ -179,7 +183,6 @@ function bufferToBase64url(buffer: ArrayBuffer): string {
 
 async function register() {
   try {
-    // 注册成功即登录：服务端直接下发会话 cookie，刷新会话即可进入。
     await api("/api/register", {
       method: "POST",
       body: JSON.stringify({
@@ -245,7 +248,7 @@ async function poll() {
     <div class="card">
       <div class="brand">
         <span class="brand-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="32" height="32" fill="none">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none">
             <path d="M12 3c-1.8 0-3.3 1-4.1 2.4A3.5 3.5 0 0 0 4 8.8C4 10.8 5.6 12.4 7.6 12.4h8.8c2 0 3.6-1.6 3.6-3.6a3.5 3.5 0 0 0-3.9-3.4A4.6 4.6 0 0 0 12 3Z" fill="#2d8a45"/>
             <rect x="7" y="12.2" width="10" height="7.3" rx="1.2" fill="#2d8a45"/>
             <rect x="6.2" y="18.8" width="11.6" height="1.8" rx="0.6" fill="#246e37"/>
@@ -256,60 +259,81 @@ async function poll() {
           <div class="role">食堂 / 管理横屏工作台</div>
         </div>
       </div>
-      <h1>{{ showRegister ? "注册" : "登录" }}</h1>
 
-      <template v-if="!showRegister">
-        <el-input v-model="username" placeholder="账号" class="mb" />
-        <el-button type="primary" size="large" class="full" @click="passkeyLogin">
-          <el-icon><Key /></el-icon>
-          使用 Passkey 登录
-        </el-button>
-        <el-button size="large" class="full outline" @click="showTotp = !showTotp">使用 TOTP</el-button>
-        <div v-if="showTotp" class="pwd-box">
-          <el-input v-model="totpUser" placeholder="账号" class="mb" />
-          <el-input v-model="totpCode" placeholder="6 位验证码" class="mb" />
-          <el-button type="primary" class="full" @click="totpLogin">验证并登录</el-button>
+      <template v-if="screen === 'home'">
+        <h1>登录</h1>
+        <p class="sub">使用 Passkey，或输入账号继续</p>
+        <el-button type="primary" size="large" class="full" @click="passkeyLogin">使用 Passkey 登录</el-button>
+        <div class="divider">或</div>
+        <el-input id="login-username" v-model="username" placeholder="账号" autocomplete="username" class="mb" @keyup.enter="goNext" />
+        <div class="row-actions">
+          <button type="button" class="link left" @click="screen = 'register'">有邀请码，去注册</button>
+          <el-button type="primary" @click="goNext">下一步</el-button>
         </div>
-        <template v-if="emailEnabled && methods.includes('email_otp')">
-          <el-button size="large" class="full outline" @click="showEmailOtp = !showEmailOtp">
-            <el-icon><Message /></el-icon>
-            邮箱验证码
-          </el-button>
-          <div v-if="showEmailOtp" class="pwd-box">
-            <el-input v-model="otpUser" placeholder="账号" class="mb" />
-            <el-button class="full" @click="requestEmailOtp">发送验证码</el-button>
-            <el-input v-model="otpCode" placeholder="6 位验证码" class="mb" />
-            <el-button type="primary" class="full" @click="verifyEmailOtp">验证并登录</el-button>
-          </div>
-        </template>
-        <p v-else class="hint">邮箱能力关闭，不显示邮箱验证码</p>
+      </template>
 
-        <button type="button" class="pwd-toggle" @click="showPwd = !showPwd">
-          <span><el-icon><Lock /></el-icon> 密码登录（兜底）</span>
-          <span>{{ showPwd ? "▴" : "▾" }}</span>
-        </button>
-        <div v-if="showPwd" class="pwd-box">
-          <el-input v-model="password" type="password" show-password placeholder="密码" class="mb" />
-          <el-button type="primary" class="full" @click="passwordLogin">登录</el-button>
+      <template v-else-if="screen === 'methods'">
+        <h1>选择登录方式</h1>
+        <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
+        <div class="methods">
+          <button type="button" class="method" @click="screen = 'password'">
+            <span><span class="t">密码</span><span class="d">使用账号密码登录</span></span><span class="arrow">›</span>
+          </button>
+          <button type="button" class="method" @click="screen = 'code'">
+            <span><span class="t">验证码</span><span class="d">Authenticator 应用中的 6 位动态码</span></span><span class="arrow">›</span>
+          </button>
+          <button v-if="showEmail" type="button" class="method" @click="screen = 'email'">
+            <span><span class="t">邮箱登录</span><span class="d">向绑定邮箱发送验证码</span></span><span class="arrow">›</span>
+          </button>
+          <button type="button" class="method" @click="screen = 'wait'">
+            <span><span class="t">新设备确认</span><span class="d">请已登录设备在页内允许</span></span><span class="arrow">›</span>
+          </button>
         </div>
+        <button type="button" class="link muted" @click="screen = 'home'">使用其他账号</button>
+      </template>
 
-        <button type="button" class="pwd-toggle" @click="showWait = !showWait">
-          <span>新设备等待页内确认</span>
-          <span>{{ showWait ? "▴" : "▾" }}</span>
-        </button>
-        <div v-if="showWait" class="pwd-box">
-          <el-button class="full" @click="requestApproval">请已登录设备确认</el-button>
-          <p v-if="wait" class="hint">{{ wait.name }} · {{ wait.ip }} · {{ wait.status === "pending" ? "等待确认" : wait.status }}</p>
-        </div>
-        <button type="button" class="link" @click="showRegister = true">有邀请码，去注册</button>
+      <template v-else-if="screen === 'password'">
+        <h1>输入密码</h1>
+        <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
+        <el-input v-model="password" type="password" show-password placeholder="密码" autocomplete="current-password" class="mb" @keyup.enter="passwordLogin" />
+        <el-button type="primary" class="full" @click="passwordLogin">登录</el-button>
+        <button type="button" class="link muted" @click="screen = 'methods'">换一种方式</button>
+      </template>
+
+      <template v-else-if="screen === 'code'">
+        <h1>输入验证码</h1>
+        <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
+        <el-input v-model="code" placeholder="6 位动态码" inputmode="numeric" autocomplete="one-time-code" maxlength="8" class="mb" @keyup.enter="codeLogin" />
+        <p class="hint">打开 Authenticator 应用查看验证码。</p>
+        <el-button type="primary" class="full" @click="codeLogin">验证并登录</el-button>
+        <button type="button" class="link muted" @click="screen = 'methods'">换一种方式</button>
+      </template>
+
+      <template v-else-if="screen === 'email'">
+        <h1>邮箱登录</h1>
+        <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
+        <el-button class="full outline" @click="requestEmailOtp">发送验证码</el-button>
+        <el-input v-model="otpCode" placeholder="6 位验证码" inputmode="numeric" autocomplete="one-time-code" class="mb" @keyup.enter="verifyEmailOtp" />
+        <el-button type="primary" class="full" @click="verifyEmailOtp">验证并登录</el-button>
+        <button type="button" class="link muted" @click="screen = 'methods'">换一种方式</button>
+      </template>
+
+      <template v-else-if="screen === 'wait'">
+        <h1>等待设备确认</h1>
+        <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
+        <p class="sub">已向你的已登录设备发起确认，请在对方页面允许或拒绝。</p>
+        <el-button class="full outline" @click="requestApproval">重新发起确认</el-button>
+        <p v-if="wait" class="hint">{{ wait.name }} · {{ wait.ip }} · {{ wait.status === "pending" ? "等待确认" : wait.status }}</p>
+        <button type="button" class="link muted" @click="screen = 'methods'">换一种方式</button>
       </template>
 
       <template v-else>
+        <h1>注册</h1>
         <el-input v-model="regUser" placeholder="账号" class="mb" />
         <el-input v-model="regCode" placeholder="邀请码" class="mb" />
         <el-input v-model="regPassword" type="password" show-password placeholder="密码（至少 8 位）" class="mb" />
         <el-button type="primary" class="full" @click="register">注册并登录</el-button>
-        <button type="button" class="link" @click="showRegister = false">返回登录</button>
+        <button type="button" class="link" @click="screen = 'home'">返回登录</button>
       </template>
     </div>
     <p class="foot">新设备将等待已登录设备页内确认 · 不扫码</p>
@@ -323,24 +347,43 @@ async function poll() {
   background: #f3f5f7; padding: 24px;
 }
 .card {
-  width: 100%; max-width: 420px; background: #fff; border-radius: 16px; padding: 28px 28px 22px;
-  border: 1px solid #e8eaed; box-shadow: 0 8px 28px rgba(16,24,40,.08);
+  width: 100%; max-width: 400px; background: #fff; border-radius: 14px; padding: 24px 24px 18px;
+  border: 1px solid #eef0f2; box-shadow: 0 1px 4px rgba(16,24,40,.06);
 }
-.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
-.name { font-size: 22px; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.name { font-size: 20px; font-weight: 700; }
 .role { font-size: 12px; color: #9ca3af; }
-h1 { margin: 0 0 20px; font-size: 28px; text-align: center; font-weight: 700; }
+h1 { margin: 0 0 8px; font-size: 22px; text-align: center; font-weight: 700; }
+.sub { margin: 0 0 16px; text-align: center; font-size: 13px; color: #6b7280; }
 .full { width: 100%; margin: 0 0 10px; }
 .outline { --el-button-border-color: #2d8a45; --el-button-text-color: #2d8a45; }
-.hint { margin: -2px 0 14px; font-size: 12px; color: #9ca3af; text-align: center; }
-.pwd-toggle {
-  width: 100%; display: flex; justify-content: space-between; align-items: center;
-  border: none; background: transparent; padding: 10px 0 0; border-top: 1px solid #f0f1f3;
-  color: #4b5563; cursor: pointer; font-size: 14px;
+.divider { display: flex; align-items: center; gap: 12px; margin: 12px 0; color: #9ca3af; font-size: 12px; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: #f0f1f3; }
+.row-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.chip-wrap { text-align: center; }
+.chip {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 auto 16px; padding: 5px 10px 5px 5px;
+  border: 1px solid #eef0f2; border-radius: 999px; font-size: 13px; color: #374151; background: #fafafa;
 }
-.pwd-box { margin-top: 12px; }
-.mb { margin-bottom: 10px; }
-.foot { margin-top: 16px; font-size: 12px; color: #9ca3af; }
+.avatar {
+  width: 26px; height: 26px; border-radius: 50%; background: #e8f5ec; color: #2d8a45;
+  display: grid; place-items: center; font-weight: 700; font-size: 12px;
+}
+.methods { display: grid; gap: 8px; }
+.method {
+  width: 100%; text-align: left; padding: 12px;
+  border: 1px solid #eef0f2; border-radius: 10px; background: #fff; cursor: pointer; font: inherit;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.method:hover { border-color: #2d8a45; background: #f4faf6; }
+.method .t { font-weight: 600; display: block; font-size: 14px; }
+.method .d { font-size: 12px; color: #9ca3af; display: block; margin-top: 2px; }
+.method .arrow { color: #9ca3af; }
+.hint { margin: 4px 0 12px; font-size: 12px; color: #9ca3af; text-align: center; }
+.foot { margin-top: 14px; font-size: 12px; color: #9ca3af; }
 .ver { margin-top: 6px; font-size: 11px; color: #b6bcc6; }
-.link { display: block; width: 100%; margin-top: 14px; border: none; background: transparent; color: #2d8a45; cursor: pointer; }
+.link { display: block; width: 100%; margin-top: 12px; border: none; background: transparent; color: #2d8a45; cursor: pointer; font-size: 14px; }
+.link.muted { color: #6b7280; }
+.link.left { width: auto; margin-top: 0; text-align: left; }
+.mb { margin-bottom: 10px; }
 </style>
