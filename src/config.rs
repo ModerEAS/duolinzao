@@ -60,6 +60,9 @@ pub struct AppConfig {
     /// `/app/*` 直出的 APK 目录。缺省为 `{static_dir}/app`（生产即此）；
     /// staging 经 `DLZ_APP_DIR` 指向镜像里另一份（如 `/app/static/app-staging`）。
     pub app_dir: Option<String>,
+    /// 启动自动签名（A 方案）：进程就绪后若镜像里是未签包且库里已有 keystore，
+    /// 自动签名发布。缺省 true；`DLZ_APK_AUTO_SIGN=false` 可关。
+    pub apk_auto_sign: bool,
 }
 
 impl AppConfig {
@@ -208,6 +211,8 @@ impl AppConfig {
         let trust_proxy = optional_bool(server, "trust_proxy").unwrap_or(false);
         let static_dir = optional_string(server, "static_dir").filter(|s| !s.is_empty());
         let app_dir = optional_string(server, "app_dir").filter(|s| !s.is_empty());
+        // 启动自动签名默认开（A 方案）：关了就全靠超管手动点「签名发布」。
+        let apk_auto_sign = optional_bool(server, "apk_auto_sign").unwrap_or(true);
 
         Ok(Self {
             super_username: super_username.unwrap(),
@@ -237,6 +242,7 @@ impl AppConfig {
             trust_proxy,
             static_dir,
             app_dir,
+            apk_auto_sign,
         })
     }
 
@@ -257,8 +263,9 @@ fn apply_env_overrides(
     value: &mut Value,
     get: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), String> {
-    const RULES: [(&[&str], &str); 8] = [
+    const RULES: [(&[&str], &str); 9] = [
         (&["server", "app_dir"], "DLZ_APP_DIR"),
+        (&["server", "apk_auto_sign"], "DLZ_APK_AUTO_SIGN"),
         (&["email", "delivery"], "DLZ_EMAIL_DELIVERY"),
         (&["database", "url"], "DLZ_DATABASE_URL"),
         (&["super_admin", "password"], "DLZ_SUPER_PASSWORD"),
@@ -337,9 +344,18 @@ fn optional_string(table: Option<&toml::map::Map<String, Value>>, key: &str) -> 
 }
 
 fn optional_bool(table: Option<&toml::map::Map<String, Value>>, key: &str) -> Option<bool> {
-    table
-        .and_then(|item| item.get(key))
-        .and_then(Value::as_bool)
+    let value = table.and_then(|item| item.get(key))?;
+    // 环境覆盖统一按字符串塞进来（如 DLZ_APK_AUTO_SIGN=false），这里与
+    // optional_u16 一样容忍字符串；非法值回 None（调用方取缺省）。
+    match value {
+        Value::Boolean(hit) => Some(*hit),
+        Value::String(text) => match text.trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn optional_u16(table: Option<&toml::map::Map<String, Value>>, key: &str) -> Option<u16> {
@@ -586,6 +602,28 @@ mod tests {
         // 都没配：无目录（路由返回 404）。
         let config = AppConfig::parse(&example_config()).expect("无静态目录");
         assert_eq!(config.resolved_app_dir(), None);
+    }
+
+    #[test]
+    fn apk_auto_sign_defaults_on_and_env_overrides() {
+        // 缺省开：不配就是 A 方案（启动自检自动签名发布）。
+        let config = AppConfig::parse(&example_config()).expect("缺省应开");
+        assert!(config.apk_auto_sign);
+        // TOML 显式关。
+        let raw = example_config().replace("[server]", "[server]\napk_auto_sign = false");
+        let config = AppConfig::parse(&raw).expect("显式 false");
+        assert!(!config.apk_auto_sign);
+        // DLZ_APK_AUTO_SIGN 环境覆盖（字符串也要能解析，这是 env 覆盖的统一形态）。
+        let env = env_map(&[("DLZ_APK_AUTO_SIGN", " false ")]);
+        let config =
+            AppConfig::parse_with_env(&example_config(), &|k| env.get(k).cloned())
+                .expect("env 关");
+        assert!(!config.apk_auto_sign);
+        let env = env_map(&[("DLZ_APK_AUTO_SIGN", "true")]);
+        let config =
+            AppConfig::parse_with_env(&example_config(), &|k| env.get(k).cloned())
+                .expect("env 开");
+        assert!(config.apk_auto_sign);
     }
 
     #[test]

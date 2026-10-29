@@ -270,3 +270,27 @@ DB 尚未配置 keystore 时：staging/CI 保持绿（`/app/*` 是 CI 未签包�
   下载安装；之后 App 内「检查更新」会自动提示。
 - 镜像体积：两份 APK 都是 MB 级（具体数字见 PR 描述），加上 JRE + build-tools
  （服务端签名用，约数百 MB）；**没开 R8/混淆**（会改 App 行为），除非确认安全才考虑。
+
+### 7.6 启动自动签名（A 方案，缺省开）
+
+- 行为：进程就绪后（监听端口 bind 成功、健康检查已可过，后台任务）自检一次
+  `{app_dir}/version.json`：暂存包有效（`versionCode>0`）且 `signing` 不是 `release`
+  → 若库里已有 keystore，用同一签名代码路径自动签名发布（签 `duolinzao.apk`、
+  重算 sha256、写出 `signing: "release"` 的 `version.json`，记一条无 actor 审计）；
+  若库里还没有 keystore，**默认只告警、不自动生成**（超管至少手动点一次「签名发布」，
+  建 key 的动作永远要人确认）。
+- 已发布（`signing: "release"`）时不动手，只做 sha 自洽检查：`version.json` 与
+  `duolinzao.apk` 对不上就记一条 warn 日志，请超管手动点「签名发布」修复。
+- 开关：`[server] apk_auto_sign`（缺省 `true`），`DLZ_APK_AUTO_SIGN=false` 可关；
+  关了就回到老流程（每次部署新镜像后手动点一次）。手动「签名发布」入口原样保留，
+  随时可点；空库点它仍会先自动生成一把 keystore 再签（7.3 第 2–3 步）。
+- 安全：keystore/密码不进 HTTP API、不进日志明文（沿用原有约束，只回显别名与指纹），
+  不给 CI 签名权（CI 仍只打未签包进镜像）。
+- 并发/目录：stop-first 单副本，原地 rename 写同一 `{app_dir}`，与手动路径一致，
+  不引入新目录；启动钩子失败只记日志（`apk auto sign ...`），绝不阻塞启动。
+- 可观测：日志关键字 `apk auto signed on boot`（成功，带 versionCode/sha256）/
+  `apk auto sign skipped|failed`（跳过/失败原因）；「应用签名」页新增「已发布」一行，
+  直接显示 `version.json` 实况（versionCode + signing），超管一眼确认自签是否生效。
+- 验证：部署新镜像后 `curl -fsS https://example.com/app/version.json | jq .`
+  （期望 `signing` 为 `release`，sha256 与刚构建的包一致），外加服务端日志一条成功记录；
+  空库场景应看到 skip 告警、且 `app_signing` 表仍为空（不自动建 key）。

@@ -48,6 +48,9 @@ cookie_secure = true
 # Traefik 侧必须设置 X-Forwarded-For，否则都记成网关 IP。直连/开发保持 false。
 trust_proxy = true
 static_dir = "/app/static"
+# 启动自动签名（A 方案，缺省开）：新镜像就绪后自动签发 /app/*，不用每次手动点。
+# 关掉：apk_auto_sign = false（或环境 DLZ_APK_AUTO_SIGN=false）。
+# 空库默认不自动生成 keystore（只告警），超管至少手动签一次。
 
 [database]
 url = "postgres://duolinzao:duolinzao@db:5432/duolinzao"
