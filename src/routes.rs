@@ -378,7 +378,8 @@ async fn email_otp_verify(
 
 #[derive(Deserialize)]
 struct PasskeyStart {
-    username: String,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 async fn passkey_start(
@@ -386,13 +387,14 @@ async fn passkey_start(
     Json(body): Json<PasskeyStart>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(
-        session::passkey_auth_start(&state, &body.username).await?,
+        session::passkey_auth_start(&state, body.username.as_deref()).await?,
     ))
 }
 
 #[derive(Deserialize)]
 struct PasskeyFinish {
-    username: String,
+    #[serde(default)]
+    username: Option<String>,
     challenge_id: Uuid,
     credential: webauthn_rs::prelude::PublicKeyCredential,
 }
@@ -405,7 +407,7 @@ async fn passkey_finish(
 ) -> Result<impl IntoResponse, AppError> {
     let issued = session::passkey_auth_finish(
         &state,
-        &body.username,
+        body.username.as_deref(),
         body.challenge_id,
         body.credential,
         &ua.0,

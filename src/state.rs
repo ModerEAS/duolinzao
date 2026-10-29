@@ -8,7 +8,10 @@ use reqwest::Client;
 use sqlx::PgPool;
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
-use webauthn_rs::prelude::{PasskeyAuthentication, PasskeyRegistration, Webauthn, WebauthnBuilder};
+use webauthn_rs::prelude::{
+    DiscoverableAuthentication, PasskeyAuthentication, PasskeyRegistration, Webauthn,
+    WebauthnBuilder,
+};
 
 use crate::config::{AppConfig, EmailDelivery};
 use crate::domain::{llm_request, parse_dsl_text, MealDsl};
@@ -298,6 +301,10 @@ pub enum Challenge {
         state: PasskeyAuthentication,
         expires_at: DateTime<Utc>,
     },
+    Discoverable {
+        state: DiscoverableAuthentication,
+        expires_at: DateTime<Utc>,
+    },
 }
 
 #[derive(Default)]
@@ -313,15 +320,15 @@ impl ChallengeStore {
     pub async fn take(&self, id: Uuid, now: DateTime<Utc>) -> Option<Challenge> {
         let mut guard = self.inner.lock().await;
         guard.retain(|_, challenge| match challenge {
-            Challenge::Register { expires_at, .. } | Challenge::Authenticate { expires_at, .. } => {
-                *expires_at > now
-            }
+            Challenge::Register { expires_at, .. }
+            | Challenge::Authenticate { expires_at, .. }
+            | Challenge::Discoverable { expires_at, .. } => *expires_at > now,
         });
         let challenge = guard.remove(&id)?;
         let alive = match &challenge {
-            Challenge::Register { expires_at, .. } | Challenge::Authenticate { expires_at, .. } => {
-                *expires_at > now
-            }
+            Challenge::Register { expires_at, .. }
+            | Challenge::Authenticate { expires_at, .. }
+            | Challenge::Discoverable { expires_at, .. } => *expires_at > now,
         };
         if alive {
             Some(challenge)

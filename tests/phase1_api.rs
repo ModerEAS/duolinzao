@@ -4068,3 +4068,106 @@ async fn account_settings() {
     assert!(!audit_text.contains("password-3"));
     assert!(!audit_text.contains("password_hash"));
 }
+
+#[tokio::test]
+async fn passkey_usernameless() {
+    let _gate = GATE.lock().await;
+    let api = prepare().await;
+    let super_token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("pk-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login",
+    )
+    .token();
+    let _ = register_user(&api, &super_token, "pk-user").await;
+
+    // 无 username → discoverable：200 + challenge + 空 allowCredentials（浏览器弹账号选择器）。
+    let started = must(
+        api.call(
+            "POST",
+            "/api/session/passkey/start",
+            None,
+            Some(json!({})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "usernameless start",
+    )
+    .json();
+    assert!(started["challenge_id"].is_string(), "{started}");
+    let allow = &started["publicKey"]["allowCredentials"];
+    assert!(
+        allow.is_null() || allow.as_array().is_some_and(|list| list.is_empty()),
+        "discoverable 不应带 allowCredentials: {started}",
+    );
+
+    // 空字符串 username 也走 discoverable。
+    must(
+        api.call(
+            "POST",
+            "/api/session/passkey/start",
+            None,
+            Some(json!({"username": "  "})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "blank username is discoverable",
+    );
+
+    // 旧路径兼容：带未知 username 仍是 passkey_none（不泄露更多）。
+    let missing = must(
+        api.call(
+            "POST",
+            "/api/session/passkey/start",
+            None,
+            Some(json!({"username": "ghost-u"})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "named start unknown",
+    )
+    .json();
+    assert_eq!(missing["error"], "passkey_none");
+
+    // finish：未知 challenge → 登录已过期，不依赖 username。
+    let fake_cred = json!({
+        "id": "AA",
+        "rawId": "AA",
+        "type": "public-key",
+        "response": {
+            "clientDataJSON": "AA",
+            "authenticatorData": "AA",
+            "signature": "AA",
+            "userHandle": null
+        }
+    });
+    let expired = must(
+        api.call(
+            "POST",
+            "/api/session/passkey/finish",
+            None,
+            Some(json!({"challenge_id": Uuid::new_v4(), "credential": fake_cred})),
+            None,
+            None,
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "usernameless finish expired",
+    )
+    .json();
+    assert_eq!(expired["error"], "passkey_failed");
+}

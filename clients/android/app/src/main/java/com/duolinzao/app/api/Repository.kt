@@ -32,8 +32,8 @@ interface DlRepository {
     suspend fun loginTotp(username: String, code: String)
     suspend fun requestEmailOtp(username: String)
     suspend fun verifyEmailOtp(username: String, code: String)
-    suspend fun passkeyStart(username: String): PasskeyStartResp
-    suspend fun passkeyFinish(username: String, challengeId: String, credentialJson: String)
+    suspend fun passkeyStart(username: String? = null): PasskeyStartResp
+    suspend fun passkeyFinish(username: String? = null, challengeId: String, credentialJson: String)
     /** 注册成功即登录（服务端 Set-Cookie；旧服务端无 Cookie 时调用方回退密码登录）。 */
     suspend fun register(username: String, inviteCode: String, password: String)
     suspend fun me(): Me
@@ -139,12 +139,15 @@ class NetworkRepository(private val api: ApiClient) : DlRepository {
             put("username", username); put("code", code)
         }.toString())
     }
-    override suspend fun passkeyStart(username: String): PasskeyStartResp =
-        parse(api.post("/api/session/passkey/start", buildJsonObject { put("username", username) }.toString()))
-    override suspend fun passkeyFinish(username: String, challengeId: String, credentialJson: String) {
+    override suspend fun passkeyStart(username: String?): PasskeyStartResp =
+        parse(api.post("/api/session/passkey/start", buildJsonObject {
+            if (!username.isNullOrBlank()) put("username", username)
+        }.toString()))
+    override suspend fun passkeyFinish(username: String?, challengeId: String, credentialJson: String) {
         val credential = json.parseToJsonElement(credentialJson)
         api.post("/api/session/passkey/finish", buildJsonObject {
-            put("username", username); put("challenge_id", challengeId); put("credential", credential)
+            if (!username.isNullOrBlank()) put("username", username)
+            put("challenge_id", challengeId); put("credential", credential)
         }.toString())
     }
     override suspend fun register(username: String, inviteCode: String, password: String) {
