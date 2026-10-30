@@ -143,7 +143,11 @@ Then("若总管已关闭邮箱能力则不出现邮箱验证码", async ({ page 
   const s = await rootSession();
   await s.call("/api/admin/settings/email", { method: "PUT", body: { enabled: false } });
   await page.goto("/");
-  await expect(page.getByText("邮箱能力关闭，不显示邮箱验证码")).toBeVisible();
+  // Google 流：关邮箱后 methods 屏不再出现「邮箱登录」入口（无「能力关闭」提示文案）。
+  await page.getByPlaceholder("账号").fill("e2e_order_probe");
+  await page.getByRole("button", { name: "下一步" }).click();
+  await expect(page.getByRole("heading", { name: "选择登录方式" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /邮箱登录/ })).toHaveCount(0);
   await expect(page.getByText("邮箱验证码", { exact: true })).toHaveCount(0);
 });
 
