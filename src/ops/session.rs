@@ -2,11 +2,15 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
-use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{
+    AuthenticationResult, DiscoverableKey, Passkey, PublicKeyCredential,
+    RegisterPublicKeyCredential,
+};
 
 use super::{
     audit, audit_user, check_login_rate, email_enabled, ensure_password, ensure_username,
-    issue_session, login_body, normalize_display_name, record_login, too_many_failures,
+    issue_session, login_body, normalize_display_name, record_attempt, record_login,
+    too_many_failures,
     IssuedSession, EMAIL_OTP_LOCK_MINUTES, EMAIL_OTP_MAX_FAILURES, EMAIL_OTP_MINUTES,
     EMAIL_OTP_RESEND_SECONDS, EMAIL_OTP_STEP_SECONDS, PASSKEY_CHALLENGE_MINUTES,
 };
@@ -1032,7 +1036,32 @@ fn passkey_none() -> AppError {
     )
 }
 
-pub async fn passkey_auth_start(state: &AppState, username: &str) -> Result<Value, AppError> {
+/// Passkey 登录 start：username 可选。缺省或空走 discoverable（免填账号，
+/// 浏览器/系统弹账号选择器）；传了 username 则保留旧 allowCredentials 路径，兼容旧客户端。
+pub async fn passkey_auth_start(
+    state: &AppState,
+    username: Option<&str>,
+) -> Result<Value, AppError> {
+    let username = username.map(str::trim).filter(|item| !item.is_empty());
+    if username.is_none() {
+        let (challenge, auth_state) = state
+            .webauthn
+            .start_discoverable_authentication()
+            .map_err(|_| AppError::bad("passkey_failed", "无法开始 Passkey 登录"))?;
+        let id = Uuid::new_v4();
+        state
+            .challenges
+            .insert(
+                id,
+                Challenge::Discoverable {
+                    state: auth_state,
+                    expires_at: state.clock.now() + Duration::minutes(PASSKEY_CHALLENGE_MINUTES),
+                },
+            )
+            .await;
+        return Ok(json!({"challenge_id": id, "publicKey": challenge}));
+    }
+    let username = username.unwrap();
     let account_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM account WHERE username = $1")
         .bind(username)
         .fetch_optional(&state.pool)
@@ -1062,7 +1091,28 @@ pub async fn passkey_auth_start(state: &AppState, username: &str) -> Result<Valu
     Ok(json!({"challenge_id": id, "publicKey": challenge}))
 }
 
+/// Passkey 登录 finish：username 可选。usernameless 时以 credential 的
+/// userHandle 为准，不依赖 body.username。
 pub async fn passkey_auth_finish(
+    state: &AppState,
+    username: Option<&str>,
+    challenge_id: Uuid,
+    credential: PublicKeyCredential,
+    user_agent: &str,
+    ip: &str,
+) -> Result<IssuedSession, AppError> {
+    let username = username.map(str::trim).filter(|item| !item.is_empty());
+    match username {
+        Some(name) => {
+            passkey_auth_finish_named(state, name, challenge_id, credential, user_agent, ip).await
+        }
+        None => {
+            passkey_auth_finish_discoverable(state, challenge_id, credential, user_agent, ip).await
+        }
+    }
+}
+
+async fn passkey_auth_finish_named(
     state: &AppState,
     username: &str,
     challenge_id: Uuid,
@@ -1114,30 +1164,7 @@ pub async fn passkey_auth_finish(
         return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
     };
     let account_id: Uuid = account.get("id");
-    let mut rows = sqlx::query(
-        "SELECT id, passkey_json FROM passkey WHERE account_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(account_id)
-    .fetch_all(&state.pool)
-    .await?;
-    let mut matched = false;
-    for row in &mut rows {
-        let mut passkey: Passkey =
-            serde_json::from_value(row.get("passkey_json")).map_err(|_| AppError::internal())?;
-        if passkey.cred_id().as_ref() == result.cred_id().as_ref() {
-            matched = true;
-            if passkey.update_credential(&result) == Some(true) {
-                let doc = serde_json::to_value(&passkey).map_err(|_| AppError::internal())?;
-                sqlx::query("UPDATE passkey SET passkey_json = $1 WHERE id = $2")
-                    .bind(doc)
-                    .bind(row.get::<Uuid, _>("id"))
-                    .execute(&state.pool)
-                    .await?;
-            }
-            break;
-        }
-    }
-    if !matched {
+    if !touch_passkey_counter(state, account_id, &result).await? {
         fail(username, ip).await;
         return Err(AppError::bad("passkey_failed", "Passkey 不属于该账号"));
     }
@@ -1156,6 +1183,128 @@ pub async fn passkey_auth_finish(
     )
     .await?;
     Ok(issued)
+}
+
+/// Usernameless 登录：账号从 credential 的 userHandle（= account_id）里拿，
+/// 不依赖请求里的 username。
+async fn passkey_auth_finish_discoverable(
+    state: &AppState,
+    challenge_id: Uuid,
+    credential: PublicKeyCredential,
+    user_agent: &str,
+    ip: &str,
+) -> Result<IssuedSession, AppError> {
+    let now = state.clock.now();
+    // 还没拿到账号，先只看 IP 限流，避免无账号枚举打爆。
+    if too_many_failures(&state.pool, &format!("ip:{ip}"), now).await? {
+        return Err(AppError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "login_rate_limited",
+            "登录失败次数过多",
+        ));
+    }
+    // 尚无账号，只有 IP 可记账。
+    let fail_ip = async {
+        let _ = record_attempt(&state.pool, &format!("ip:{ip}"), false, state.clock.now()).await;
+    };
+    let stored = state.challenges.take(challenge_id, now).await;
+    let Some(stored) = stored else {
+        fail_ip.await;
+        return Err(AppError::bad("passkey_failed", "登录已过期"));
+    };
+    let Challenge::Discoverable {
+        state: auth_state, ..
+    } = stored
+    else {
+        fail_ip.await;
+        return Err(AppError::bad("passkey_failed", "登录状态不匹配"));
+    };
+    let account_id = match state
+        .webauthn
+        .identify_discoverable_authentication(&credential)
+    {
+        Ok((id, _)) => id,
+        Err(_) => {
+            fail_ip.await;
+            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+        }
+    };
+    let account = sqlx::query("SELECT id, username FROM account WHERE id = $1")
+        .bind(account_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let Some(account) = account else {
+        fail_ip.await;
+        return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+    };
+    let username: String = account.get("username");
+    // 拿到账号后与密码登录共用同一失败计数窗；每次失败都落库。
+    check_login_rate(&state.pool, &username, ip, now).await?;
+    let keys = load_passkeys(state, account_id).await?;
+    if keys.is_empty() {
+        record_login(&state.pool, &username, ip, false, now).await?;
+        return Err(passkey_none());
+    }
+    let creds: Vec<DiscoverableKey> = keys.iter().map(DiscoverableKey::from).collect();
+    let result = match state
+        .webauthn
+        .finish_discoverable_authentication(&credential, auth_state, &creds)
+    {
+        Ok(item) => item,
+        Err(_) => {
+            record_login(&state.pool, &username, ip, false, now).await?;
+            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+        }
+    };
+    if !touch_passkey_counter(state, account_id, &result).await? {
+        record_login(&state.pool, &username, ip, false, now).await?;
+        return Err(AppError::bad("passkey_failed", "Passkey 不属于该账号"));
+    }
+    record_login(&state.pool, &username, ip, true, now).await?;
+    let issued = issue_session(&state.pool, state.clock.now(), account_id, user_agent, ip).await?;
+    audit(
+        state,
+        Some(account_id),
+        Some(username),
+        None,
+        "login",
+        Some("session"),
+        Some(issued.session_id.to_string()),
+        json!({"method": "passkey"}),
+        "ok",
+    )
+    .await?;
+    Ok(issued)
+}
+
+/// 断言命中的 credential 属于该账号时更新 counter；返回是否命中。
+async fn touch_passkey_counter(
+    state: &AppState,
+    account_id: Uuid,
+    result: &AuthenticationResult,
+) -> Result<bool, AppError> {
+    let mut rows = sqlx::query(
+        "SELECT id, passkey_json FROM passkey WHERE account_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await?;
+    for row in &mut rows {
+        let mut passkey: Passkey =
+            serde_json::from_value(row.get("passkey_json")).map_err(|_| AppError::internal())?;
+        if passkey.cred_id().as_ref() == result.cred_id().as_ref() {
+            if passkey.update_credential(result) == Some(true) {
+                let doc = serde_json::to_value(&passkey).map_err(|_| AppError::internal())?;
+                sqlx::query("UPDATE passkey SET passkey_json = $1 WHERE id = $2")
+                    .bind(doc)
+                    .bind(row.get::<Uuid, _>("id"))
+                    .execute(&state.pool)
+                    .await?;
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub async fn list_devices(state: &AppState, user: &CurrentUser) -> Result<Value, AppError> {

@@ -85,7 +85,8 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
                 busy = true; error = null
                 try {
                     val activity = context as Activity
-                    val started = Session.repo.passkeyStart(username.ifBlank { throw ApiException(400, "need_username", "Passkey 需要先填账号") })
+                    // 免填账号：usernameless start，系统弹账号选择器。
+                    val started = Session.repo.passkeyStart()
                     val requestJson = started.publicKey?.let {
                         Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), it)
                     }.orEmpty()
@@ -94,7 +95,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
                         showPwd = true
                         error = "Passkey 不可用，已切换到密码登录"
                     } else {
-                        Session.repo.passkeyFinish(username, started.challenge_id, assertion)
+                        Session.repo.passkeyFinish(challengeId = started.challenge_id, credentialJson = assertion)
                         enter()
                     }
                 } catch (e: Exception) { fail(e as Exception, fallbackPwd = true) }

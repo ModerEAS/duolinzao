@@ -93,23 +93,30 @@ async function verifyEmailOtp() {
 }
 
 async function passkeyLogin() {
-  if (!username.value) {
-    showPwd.value = true;
-    ElMessage.info("Passkey 需要先填写账号");
-    return;
-  }
+  // 免填账号：直接 start（无 username），浏览器/系统弹账号选择器。
   try {
     const started = await api<{ challenge_id: string; publicKey: Record<string, unknown> }>(
       "/api/session/passkey/start",
-      { method: "POST", body: JSON.stringify({ username: username.value }) },
+      { method: "POST", body: JSON.stringify({}) },
     );
     const publicKey = prepareRequest(unwrapPublicKey(started) as unknown as PublicKeyCredentialRequestOptions);
-    const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+    let credential: PublicKeyCredential | null;
+    try {
+      credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+    } catch (error) {
+      // 用户取消 / 无可用凭证：都是本地行为，不打 error toast 吓人。
+      if (error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "AbortError")) {
+        ElMessage.info("已取消 Passkey 登录");
+        return;
+      }
+      showPwd.value = true;
+      ElMessage.info("没有可用的 Passkey，请用密码登录");
+      return;
+    }
     if (!credential) return;
     await api("/api/session/passkey/finish", {
       method: "POST",
       body: JSON.stringify({
-        username: username.value,
         challenge_id: started.challenge_id,
         credential: credentialToJson(credential),
       }),

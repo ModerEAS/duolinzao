@@ -44,9 +44,9 @@ class MockRepository : DlRepository {
         if (code.trim() != "123456") throw ApiException(400, "email_otp_invalid", "验证码不正确或已过期")
         authed = true
     }
-    override suspend fun passkeyStart(username: String) =
+    override suspend fun passkeyStart(username: String?) =
         PasskeyStartResp("mock-challenge", buildJsonObject { put("mock", true) })
-    override suspend fun passkeyFinish(username: String, challengeId: String, credentialJson: String) {
+    override suspend fun passkeyFinish(username: String?, challengeId: String, credentialJson: String) {
         authed = true
     }
     override suspend fun register(username: String, inviteCode: String, password: String) {
