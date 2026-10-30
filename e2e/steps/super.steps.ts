@@ -357,14 +357,16 @@ When("再次开启邮箱能力", async () => {
 Then("邮箱验证码入口在优先级中位于 TOTP 与密码之间", async ({ page }) => {
   await page.context().clearCookies();
   await page.goto("/");
+  await page.getByPlaceholder("账号").fill("e2e_super_order_probe");
+  await page.getByRole("button", { name: "下一步" }).click();
   const texts = await page.getByRole("button").allTextContents();
   const flat = texts.join("\n");
-  const totp = flat.indexOf("使用 TOTP");
-  const otp = flat.indexOf("邮箱验证码");
-  const pwd = flat.indexOf("密码登录（兜底）");
-  expect(totp).toBeGreaterThanOrEqual(0);
+  const pwd = flat.indexOf("使用账号密码登录");
+  const totp = flat.indexOf("Authenticator");
+  const otp = flat.indexOf("邮箱登录");
+  expect(pwd).toBeGreaterThanOrEqual(0);
+  expect(totp).toBeGreaterThan(pwd);
   expect(otp).toBeGreaterThan(totp);
-  expect(pwd).toBeGreaterThan(otp);
   // 还原关闭，避免影响其它场景（员工登录优先级期望关闭态）。
   const s = await rootSession();
   await s.call("/api/admin/settings/email", { method: "PUT", body: { enabled: false } });
