@@ -339,8 +339,10 @@ Then("全站登录不再出现邮箱验证码", async ({ page }) => {
 });
 
 Then("不强制验证邮箱", async ({ page }) => {
-  // 注册表单无邮箱必填项。
+  // 注册入口只在登录首页；上一断言停在 methods 屏，先回首页。
+  await page.goto("/");
   await page.getByRole("button", { name: "有邀请码，去注册" }).click();
+  await expect(page.getByRole("heading", { name: "注册" })).toBeVisible();
   await expect(page.getByPlaceholder("账号")).toBeVisible();
   await expect(page.getByPlaceholder(/邮箱/)).toHaveCount(0);
 });
