@@ -61,9 +61,10 @@ fun DlPrimaryButton(text: String, enabled: Boolean = true, testTag: String = "",
 }
 
 @Composable
-fun DlOutlineButton(text: String, testTag: String = "", onClick: () -> Unit) {
+fun DlOutlineButton(text: String, enabled: Boolean = true, testTag: String = "", onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.fillMaxWidth().then(if (testTag.isNotEmpty()) Modifier.testTag(testTag) else Modifier),
     ) { Text(text) }
 }

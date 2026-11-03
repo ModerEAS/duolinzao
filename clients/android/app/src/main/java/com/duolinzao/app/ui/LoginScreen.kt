@@ -102,6 +102,28 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
                 busy = false
             }
         }
+        // 该账号回退：带 username 走 allowCredentials，兼容非 discoverable 旧钥匙。
+        DlOutlineButton("用该账号 Passkey 登录", enabled = username.isNotBlank()) {
+            scope.launch {
+                busy = true; error = null
+                try {
+                    val activity = context as Activity
+                    val started = Session.repo.passkeyStart(username)
+                    val requestJson = started.publicKey?.let {
+                        Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), it)
+                    }.orEmpty()
+                    val assertion = PasskeyHelper.getAssertion(activity, requestJson)
+                    if (assertion == null) {
+                        showPwd = true
+                        error = "Passkey 不可用，已切换到密码登录"
+                    } else {
+                        Session.repo.passkeyFinish(username = username, challengeId = started.challenge_id, credentialJson = assertion)
+                        enter()
+                    }
+                } catch (e: Exception) { fail(e as Exception, fallbackPwd = true) }
+                busy = false
+            }
+        }
         if (methods.contains("totp")) {
             DlOutlineButton(if (showTotp) "收起 TOTP" else "使用 TOTP") { showTotp = !showTotp }
         }

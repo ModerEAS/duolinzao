@@ -918,6 +918,13 @@ pub async fn passkey_register_start(
             tracing::warn!(error = ?err, "passkey start");
             AppError::bad("passkey_failed", "无法开始绑定 Passkey")
         })?;
+    // 首页是 usernameless 登录（空 allowCredentials + userHandle），要求钥匙 discoverable。
+    // webauthn-rs 0.5 的 start_passkey_registration 写死 residentKey discouraged，
+    // Windows Hello 等会生成 non-discoverable 钥匙 → 「已绑定却登不进」。这里把下发
+    // 选项改成 required；finish 时服务端忽略该字段（core 解构为 `_`），不影响校验。
+    let mut public_key =
+        serde_json::to_value(challenge).map_err(|_| AppError::internal())?;
+    force_discoverable_registration(&mut public_key);
     let id = Uuid::new_v4();
     state
         .challenges
@@ -930,7 +937,16 @@ pub async fn passkey_register_start(
             },
         )
         .await;
-    Ok(json!({"challenge_id": id, "publicKey": challenge}))
+    Ok(json!({"challenge_id": id, "publicKey": public_key}))
+}
+
+/// 把注册选项改成 residentKey required，专供首页 usernameless 登录。
+/// 结构缺失时保持原样（旧客户端不受影响）。
+fn force_discoverable_registration(body: &mut Value) {
+    if let Some(selection) = body.pointer_mut("/publicKey/authenticatorSelection") {
+        selection["residentKey"] = json!("required");
+        selection["requireResidentKey"] = json!(true);
+    }
 }
 
 pub async fn passkey_register_finish(
@@ -1699,4 +1715,35 @@ pub async fn revoke_all_sessions(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_options_require_discoverable() {
+        let mut body = json!({
+            "publicKey": {
+                "authenticatorSelection": {
+                    "residentKey": "discouraged",
+                    "requireResidentKey": false,
+                    "userVerification": "required"
+                }
+            }
+        });
+        force_discoverable_registration(&mut body);
+        let selection = &body["publicKey"]["authenticatorSelection"];
+        assert_eq!(selection["residentKey"], json!("required"));
+        assert_eq!(selection["requireResidentKey"], json!(true));
+        // 其余选项不动。
+        assert_eq!(selection["userVerification"], json!("required"));
+    }
+
+    #[test]
+    fn register_options_missing_selection_is_tolerated() {
+        let mut body = json!({"publicKey": {}});
+        force_discoverable_registration(&mut body);
+        assert_eq!(body, json!({"publicKey": {}}));
+    }
 }

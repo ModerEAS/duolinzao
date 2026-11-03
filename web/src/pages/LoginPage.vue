@@ -98,12 +98,14 @@ async function verifyEmailOtp() {
   }
 }
 
-async function passkeyLogin() {
+async function passkeyLogin(username?: string) {
   // 免填账号：直接 start（无 username），浏览器/系统弹账号选择器。
+  // 传了账号则走带 allowCredentials 的命名路径，兼容非 discoverable 旧钥匙。
+  const named = username?.trim() ? { username: username.trim() } : {};
   try {
     const started = await api<{ challenge_id: string; publicKey: Record<string, unknown> }>(
       "/api/session/passkey/start",
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify(named) },
     );
     const publicKey = prepareRequest(unwrapPublicKey(started) as unknown as PublicKeyCredentialRequestOptions);
     let credential: PublicKeyCredential | null;
@@ -122,6 +124,7 @@ async function passkeyLogin() {
     await api("/api/session/passkey/finish", {
       method: "POST",
       body: JSON.stringify({
+        ...named,
         challenge_id: started.challenge_id,
         credential: credentialToJson(credential),
       }),
@@ -263,7 +266,7 @@ async function poll() {
       <template v-if="screen === 'home'">
         <h1>登录</h1>
         <p class="sub">使用 Passkey，或输入账号继续</p>
-        <el-button type="primary" size="large" class="full" @click="passkeyLogin">使用 Passkey 登录</el-button>
+        <el-button type="primary" size="large" class="full" @click="passkeyLogin()">使用 Passkey 登录</el-button>
         <div class="divider">或</div>
         <el-input id="login-username" v-model="username" placeholder="账号" autocomplete="username" class="mb" @keyup.enter="goNext" />
         <div class="row-actions">
@@ -276,6 +279,9 @@ async function poll() {
         <h1>选择登录方式</h1>
         <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
         <div class="methods">
+          <button type="button" class="method" @click="passkeyLogin(username)">
+            <span><span class="t">通行密钥</span><span class="d">使用该账号绑定的 Passkey 登录</span></span><span class="arrow">›</span>
+          </button>
           <button type="button" class="method" @click="screen = 'password'">
             <span><span class="t">密码</span><span class="d">使用账号密码登录</span></span><span class="arrow">›</span>
           </button>
