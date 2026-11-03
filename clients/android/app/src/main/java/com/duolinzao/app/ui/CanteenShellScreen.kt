@@ -1,5 +1,19 @@
 package com.duolinzao.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import java.time.DayOfWeek
+import java.time.LocalDate
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -92,18 +106,73 @@ fun CanteenShellScreen(onLogout: () -> Unit, onSwitchEmployee: () -> Unit) {
         }
     }
     var menuDeepLink by remember { mutableStateOf<String?>(null) }
+    val title = when (tab) {
+        0 -> "多邻灶"
+        1 -> "本周选菜"
+        2 -> "菜谱"
+        else -> "更多"
+    }
+    val subtitle = when (tab) {
+        0 -> "食堂工作台"
+        1 -> "勾选立即保存"
+        2 -> "点行编辑 · 右上新建"
+        else -> "按权限显隐"
+    }
     Scaffold(
+        containerColor = DlBg,
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = {}, label = { Text("人数") }, modifier = Modifier.testTag("tab_headcount"))
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = {}, label = { Text("选菜") }, modifier = Modifier.testTag("tab_optimize"))
-                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = {}, label = { Text("菜谱") }, modifier = Modifier.testTag("tab_menu"))
-                NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = {}, label = { Text("更多") }, modifier = Modifier.testTag("tab_more"))
+            NavigationBar(containerColor = DlCard) {
+                val itemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = DlGreen,
+                    selectedTextColor = DlGreen,
+                    indicatorColor = DlGreenSoft,
+                    unselectedIconColor = DlMuted,
+                    unselectedTextColor = DlMuted,
+                )
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { DlNavEmoji("👥", tab == 0) },
+                    label = { Text("人数", fontSize = 11.sp) },
+                    colors = itemColors,
+                    modifier = Modifier.testTag("tab_headcount"),
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { DlNavEmoji("📅", tab == 1) },
+                    label = { Text("选菜", fontSize = 11.sp) },
+                    colors = itemColors,
+                    modifier = Modifier.testTag("tab_optimize"),
+                )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { DlNavEmoji("📋", tab == 2) },
+                    label = { Text("菜谱", fontSize = 11.sp) },
+                    colors = itemColors,
+                    modifier = Modifier.testTag("tab_menu"),
+                )
+                NavigationBarItem(
+                    selected = tab == 3,
+                    onClick = { tab = 3 },
+                    icon = { DlNavEmoji("⋯", tab == 3) },
+                    label = { Text("更多", fontSize = 11.sp) },
+                    colors = itemColors,
+                    modifier = Modifier.testTag("tab_more"),
+                )
             }
         },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            CanteenTopBar(canteens = canteens, picked = picked, loaded = scopeLoaded, onPick = { picked = it })
+        Column(Modifier.padding(padding).fillMaxSize().background(DlBg)) {
+            CanteenTopBar(
+                title = title,
+                subtitle = subtitle,
+                canteens = canteens,
+                picked = picked,
+                loaded = scopeLoaded,
+                onPick = { picked = it },
+            )
             val empty = scopeLoaded && (picked.isEmpty() || canteens.isEmpty())
             when (tab) {
                 0 -> HeadcountTab(canteenId = picked, empty = empty)
@@ -115,27 +184,58 @@ fun CanteenShellScreen(onLogout: () -> Unit, onSwitchEmployee: () -> Unit) {
     }
 }
 
-/** 顶栏：管理范围内食堂选择器；仅 1 个时只读展示；空范围时空态提示。 */
+/** 顶栏品牌 + 食堂 pill；对齐 canteen-portrait-mock / Web。 */
 @Composable
-private fun CanteenTopBar(canteens: List<Canteen>, picked: String, loaded: Boolean, onPick: (String) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("多邻灶 · 食堂工作台", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        if (!loaded) {
-            Text("…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else if (canteens.isEmpty()) {
-            Text("没有可管理的食堂", color = MaterialTheme.colorScheme.error)
-        } else if (canteens.size == 1) {
-            Text(canteens.first().name, color = MaterialTheme.colorScheme.primary)
-        } else {
-            canteens.forEach {
-                TextButton(onClick = { onPick(it.id) }, modifier = Modifier.testTag("canteen_pick_${it.id}")) {
-                    Text(if (it.id == picked) "● ${it.name}" else it.name)
+private fun CanteenTopBar(
+    title: String,
+    subtitle: String,
+    canteens: List<Canteen>,
+    picked: String,
+    loaded: Boolean,
+    onPick: (String) -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val pickedName = canteens.find { it.id == picked }?.name
+    DlBrandHeader(title = title, subtitle = subtitle) {
+        when {
+            !loaded -> Text("…", color = DlMuted, fontSize = 12.sp)
+            canteens.isEmpty() -> Text("没有可管理的食堂", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            canteens.size == 1 -> DlCanteenPill(canteens.first().name)
+            else -> Box {
+                DlCanteenPill(
+                    text = pickedName ?: "选择食堂",
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.testTag("canteen_picker"),
+                )
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    canteens.forEach {
+                        DropdownMenuItem(
+                            text = { Text(if (it.id == picked) "● ${it.name}" else it.name) },
+                            onClick = { onPick(it.id); menuOpen = false },
+                            modifier = Modifier.testTag("canteen_pick_${it.id}"),
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+private fun formatCnDate(iso: String): String {
+    return try {
+        val d = LocalDate.parse(iso)
+        val week = when (d.dayOfWeek) {
+            DayOfWeek.MONDAY -> "周一"
+            DayOfWeek.TUESDAY -> "周二"
+            DayOfWeek.WEDNESDAY -> "周三"
+            DayOfWeek.THURSDAY -> "周四"
+            DayOfWeek.FRIDAY -> "周五"
+            DayOfWeek.SATURDAY -> "周六"
+            DayOfWeek.SUNDAY -> "周日"
+        }
+        "${d.monthValue}月${d.dayOfMonth}日 $week"
+    } catch (_: Exception) {
+        iso
     }
 }
 
@@ -180,31 +280,60 @@ private fun HeadcountTab(canteenId: String, empty: Boolean) {
     }
     LaunchedEffect(date, canteenId) { load() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = { date = addDays(date, -1) }) { Text("‹") }
-            Text(date, modifier = Modifier.testTag("headcount_date"))
-            TextButton(onClick = { date = addDays(date, 1) }) { Text("›") }
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = DlCard,
+            border = androidx.compose.foundation.BorderStroke(1.dp, DlLine),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("‹", color = DlGreen, fontSize = 18.sp, modifier = Modifier.clickable { date = addDays(date, -1) }.padding(horizontal = 6.dp))
+                Text(formatCnDate(date), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.testTag("headcount_date"))
+                Text("›", color = DlGreen, fontSize = 18.sp, modifier = Modifier.clickable { date = addDays(date, 1) }.padding(horizontal = 6.dp))
+            }
         }
         if (error != null) {
             Text(error!!, color = MaterialTheme.colorScheme.error)
             Button(onClick = { load() }, modifier = Modifier.testTag("headcount_retry")) { Text("重试") }
         }
-        if (loading) Text("加载中…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (loading) Text("加载中…", color = DlMuted)
         SLOT_IDS.forEach { slot ->
-            Card(Modifier.fillMaxWidth().testTag("headcount_card_$slot")) {
-                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Column {
-                        Text(SLOT_NAMES[slot].orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("有效报餐", style = MaterialTheme.typography.titleMedium)
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = DlCard,
+                border = androidx.compose.foundation.BorderStroke(1.dp, DlLine),
+                shadowElevation = 1.dp,
+                modifier = Modifier.fillMaxWidth().testTag("headcount_card_$slot"),
+            ) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(SLOT_NAMES[slot].orEmpty(), color = DlMuted, fontSize = 13.sp)
+                        Text("有效报餐", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = DlInk)
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("${counts[slot] ?: 0}", fontSize = 40.sp, color = MaterialTheme.colorScheme.primary)
-                        Text("人", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${counts[slot] ?: 0}", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = DlGreen, lineHeight = 40.sp)
+                        Text("人", color = DlMuted, fontSize = 12.sp)
                     }
                 }
             }
         }
-        Text(if (locked) "该日三餐已锁定（一次锁定）" else "该日三餐尚未锁定", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .border(1.dp, Color(0xFFC9DDD0), RoundedCornerShape(999.dp))
+                .background(Color(0xFFF7FAF8))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(
+                if (locked) "该日三餐已锁定（一次锁定）" else "该日三餐尚未锁定",
+                color = DlMuted,
+                fontSize = 12.sp,
+            )
+        }
     }
 }
 
@@ -635,28 +764,64 @@ private fun MoreRoot(canteenId: String, onOpen: (String) -> Unit, onLogout: () -
     val isSuper = roles.any { it.role == "super_admin" }
     val canAlert = isSuper || roles.any { it.role == "canteen" && it.canteen_ids.contains(canteenId) }
     val canEmployee = perms.any { it == "meal.self_read" || it == "shift.self_write" }
-    val entries = buildList {
+    val feedback = buildList {
         if (canAlert) add(Triple("alert", "强提醒", "more_entry_alert"))
         if (perms.contains("rating.admin_read")) add(Triple("rating", "评分汇总", "more_entry_rating"))
         if (perms.contains("comment.admin_read")) add(Triple("comment", "评语", "more_entry_comment"))
+    }
+    val manage = buildList {
         if (perms.contains("meal.admin_override")) add(Triple("override", "截止后改单", "more_entry_override"))
         if (perms.contains("user.invite")) add(Triple("invite", "邀请码", "more_entry_invite"))
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("账户：${me?.personName().orEmpty()}", style = MaterialTheme.typography.titleMedium)
-        entries.forEach { (route, label, tag) ->
-            TextButton(onClick = { onOpen(route) }, modifier = Modifier.testTag(tag)) { Text(label) }
-        }
-        if (canEmployee) {
-            TextButton(onClick = onSwitchEmployee, modifier = Modifier.testTag("canteen_to_employee")) { Text("切换到员工端") }
-        }
-        TextButton(onClick = {
-            scope.launch {
-                try { Session.repo.logout() } catch (_: Exception) { }
-                Session.logoutLocal()
-                onLogout()
+    val account = buildList {
+        if (canEmployee) add(Triple("employee", "切换到员工端", "canteen_to_employee"))
+        add(Triple("logout", "退出登录", "canteen_logout"))
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        if (feedback.isNotEmpty()) {
+            DlSettingsGroup("反馈") {
+                feedback.forEachIndexed { i, (route, label, tag) ->
+                    DlSettingsRow(label = label, onClick = { onOpen(route) }, testTag = tag, showDivider = i < feedback.lastIndex)
+                }
             }
-        }, modifier = Modifier.testTag("canteen_logout")) { Text("退出登录") }
+        }
+        if (manage.isNotEmpty()) {
+            DlSettingsGroup("管理") {
+                manage.forEachIndexed { i, (route, label, tag) ->
+                    DlSettingsRow(label = label, onClick = { onOpen(route) }, testTag = tag, showDivider = i < manage.lastIndex)
+                }
+            }
+        }
+        DlSettingsGroup("账户") {
+            account.forEachIndexed { i, (route, label, tag) ->
+                val danger = route == "logout"
+                DlSettingsRow(
+                    label = label,
+                    onClick = {
+                        if (route == "employee") {
+                            onSwitchEmployee()
+                        } else if (route == "logout") {
+                            scope.launch {
+                                try { Session.repo.logout() } catch (_: Exception) { }
+                                Session.logoutLocal()
+                                onLogout()
+                            }
+                        } else {
+                            onOpen(route)
+                        }
+                    },
+                    testTag = tag,
+                    danger = danger,
+                    showDivider = i < account.lastIndex,
+                )
+            }
+        }
+        Text(
+            me?.personName().orEmpty(),
+            color = DlMuted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 8.dp, start = 6.dp),
+        )
     }
 }
 

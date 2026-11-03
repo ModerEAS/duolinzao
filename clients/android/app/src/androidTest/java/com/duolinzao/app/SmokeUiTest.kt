@@ -15,21 +15,32 @@ import org.junit.runner.RunWith
 
 /**
  * Compose UI 冒烟：mock 模式（assets/server.json useMock=true），不连真后端。
- * 走密码兜底，不依赖 Passkey（模拟器上无凭据提供方）。
+ * 走 Web 同款「账号 → 下一步 → 密码」流，不依赖通行密钥。
  */
 @RunWith(AndroidJUnit4::class)
 class SmokeUiTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
 
+    private fun loginWithPassword(user: String, password: String = "password123") {
+        composeRule.onNodeWithText("登录").assertIsDisplayed()
+        composeRule.onNodeWithTag("login_username").performScrollTo().performTextInput(user)
+        composeRule.onNodeWithTag("login_next").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag("login_method_password").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("login_method_password").performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithTag("login_password").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("login_password").performScrollTo().performTextInput(password)
+        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
+    }
+
     @Test
     fun canteenLoginEntersCanteenShell() {
         // 食堂 mock 账号：用户名 canteen，任意非空密码
-        composeRule.onNodeWithText("员工登录").assertIsDisplayed()
-        composeRule.onNodeWithTag("login_password_toggle").performScrollTo().performClick()
-        composeRule.onNodeWithTag("login_username").performScrollTo().performTextInput("canteen")
-        composeRule.onNodeWithTag("login_password").performScrollTo().performTextInput("password123")
-        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
+        loginWithPassword("canteen")
 
         // 食堂竖屏壳四 Tab 出现，人数卡可见
         composeRule.waitUntil(timeoutMillis = 15_000) {
@@ -124,16 +135,9 @@ class SmokeUiTest {
 
     @Test
     fun loginPasswordEntersShell() {
-        // 1. 启动后能看到登录页
-        composeRule.onNodeWithText("员工登录").assertIsDisplayed()
+        loginWithPassword("demo")
 
-        // 2. 展开密码区（默认收起），填任意非空账号/密码（mock 接受）
-        composeRule.onNodeWithTag("login_password_toggle").performScrollTo().performClick()
-        composeRule.onNodeWithTag("login_username").performScrollTo().performTextInput("demo")
-        composeRule.onNodeWithTag("login_password").performScrollTo().performTextInput("password123")
-        composeRule.onNodeWithTag("login_submit").performScrollTo().performClick()
-
-        // 3. 登录后壳底部三 Tab 出现
+        // 登录后壳底部三 Tab 出现
         composeRule.waitUntil(timeoutMillis = 15_000) {
             composeRule.onAllNodesWithTag("tab_meals").fetchSemanticsNodes().isNotEmpty()
         }
