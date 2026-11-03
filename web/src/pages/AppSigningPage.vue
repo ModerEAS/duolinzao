@@ -133,6 +133,28 @@ async function generate() {
   }
 }
 
+/** 同源受控直链：浏览器带会话 cookie；匿名访问 /app/* 会 401。 */
+const apkPath = "/app/duolinzao.apk";
+const versionPath = "/app/version.json";
+function apkUrl() {
+  return `${window.location.origin}${apkPath}`;
+}
+async function copyApkLink() {
+  try {
+    await navigator.clipboard.writeText(apkUrl());
+    ElMessage.success("已复制 APK 链接（需已登录会话才能下载）。");
+  } catch (error) {
+    ElMessage.error(explain(error));
+  }
+}
+function downloadApk() {
+  // 同页导航会带上 dlz_session；不要用无凭据的 fetch。
+  window.location.assign(apkPath);
+}
+function openVersionJson() {
+  window.open(versionPath, "_blank", "noopener");
+}
+
 onMounted(load);
 </script>
 
@@ -190,6 +212,21 @@ onMounted(load);
         <span class="mono">sha256：{{ lastSign.sha256 }}</span>
         <span v-if="lastSign.keystore_generated">本次已自动生成 keystore 并存进数据库（别名 {{ status.key_alias }}）。</span>
       </div>
+    </div>
+    <div class="card box">
+      <div class="row">
+        <div>
+          <strong>受控下载（唯一对外入口）</strong>
+          <p class="muted">匿名拉 <code>/app/*</code> 会 401。首次装包只在本页发；员工「我的」、食堂「更多」、登录页、页脚都不挂下载。已登录用户可在 App 内检查更新。</p>
+        </div>
+        <div class="actions">
+          <el-button @click="copyApkLink">复制 APK 链接</el-button>
+          <el-button type="primary" @click="downloadApk">下载 APK</el-button>
+          <el-button @click="openVersionJson">查看 version.json</el-button>
+        </div>
+      </div>
+      <p class="mono muted">{{ apkUrl() }}</p>
+      <el-alert type="info" show-icon :closable="false" title="把链接发给别人时，对方也必须已登录本站，否则 401；也可以你先下载再线下分发安装包。" />
     </div>
   </div>
 </template>

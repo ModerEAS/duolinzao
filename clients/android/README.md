@@ -68,8 +68,9 @@ scripts/inject-server-url.sh https://app.example.com universal.apk duolinzao.apk
 ## 应用内更新
 
 App 只拉**当前 baseUrl 同源**的 `/app/version.json`
-(`{versionCode, versionName, url, sha256}`)，`versionCode` 更大才提示；
-下载后校验 sha256 + 包名（签名指纹尽力比对），任一失败丢弃。
+(`{versionCode, versionName, url, sha256}`)，**必须带登录会话 cookie**
+（服务端 `GET /app/*` 匿名 401；首次装包入口只在超管「应用签名」页）。
+`versionCode` 更大才提示；下载后校验 sha256 + 包名（签名指纹尽力比对），任一失败丢弃。
 服务端需保证 `/app/*` 缺文件返回 404（不能回退 index.html）。
 
 ## 真机验证记录（HK1_RBOX_K8，Android 13 / API 33，无 GMS）

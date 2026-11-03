@@ -21,8 +21,8 @@ UI 参考：[docs/ui](../ui/README.md)
 | 最低版本 | **minSdk 30（Android 11）**，理由见 §8.4 |
 | Passkey | 使用 **Android Credential Manager / 平台 API**，**不用 WebView 套 WebAuthn 页** |
 | 登录优先级 | **默认 Passkey**；无可用凭据 / 取消 / 失败后再密码（备用入口可手动切密码） |
-| 分发 | **只从各部署自己的服务器分发**：部署方改包内 Base URL 后重签，经站点 `/app/` 下发；**不用 GitHub Releases，暂不上应用商店** |
-| 应用内更新 | 第一版即包含：从自家服务器同源拉 `{baseUrl}/app/version.json`；服务端配套支持（§4.4） |
+| 分发 | **只从各部署自己的服务器分发**：部署方改包内 Base URL 后重签，经站点 `/app/` 下发；**不用 GitHub Releases，暂不上应用商店**；`GET /app/*` 需有效会话（匿名 401）；首次装包入口只在超管「应用签名」页 |
+| 应用内更新 | 第一版即包含：已登录用户从自家服务器同源拉 `{baseUrl}/app/version.json`（带会话 cookie）；服务端配套支持（§4.4） |
 | 卓易通 | 不作为交付目标，但保持兼容：核心流程不依赖仅 GMS 才有的能力（§8.2） |
 
 ---
@@ -204,6 +204,9 @@ Web 与 App 共用同一流程：
 #### 3.2.4 邮箱 OTP 登录（Web 与 App；取代 magic link）
 
 邮箱能力开启时，**唯一**的邮箱登录方式是一次性验证码（OTP）。**不再**提供 magic link，也**不**为登录配置 App Links / `assetlinks.json`。
+（注：站点仍托管 `/.well-known/assetlinks.json`，但只为**通行密钥**的 Digital Asset Links：
+`delegate_permission/common.get_login_creds`，由后端签约时自动生成，与邮件登录的 App Links 无关，
+见 `docs/deploy.md` §7.7。）
 
 流程（Web 与 App 相同）：
 
@@ -326,7 +329,8 @@ APK 内例如 `assets/server.json`：
 3. **邮箱登录改为 OTP（取代 magic link）**：
    - 新增 `POST /api/session/email-otp/request` 与 `POST /api/session/email-otp/verify`（路径可微调，须 Web / App 共用）；参数见 §3.2.4（6 位、与认证器 TOTP 同算法风格、有效 10 分钟、重发 ≥60s、5 次失败锁 15 分钟）。
    - `GET /api/session/methods`：邮箱开启时返回 **`email_otp`**，**不再**返回 `magic_link`。
-   - **废弃并移除**（或永久关闭）`/api/session/magic-link/request` 与 `/consume`；登录不再发含链接的邮件，也不再为登录准备 App Links / `assetlinks.json`。
+   - **废弃并移除**（或永久关闭）`/api/session/magic-link/request` 与 `/consume`；登录不再发含链接的邮件，也不再为登录准备 App Links / `assetlinks.json`
+     （通行密钥用的 `/.well-known/assetlinks.json` 除外：那是 RP ID 关联，不是登录链接，见 `docs/deploy.md` §7.7）。
    - **Web 登录页**与 App 一并改为「邮箱验证码」UI，去掉 magic link 入口。
    - **认证器 TOTP**（`/api/session/totp`、`/api/me/totp/*`）保持不变，仍是独立登录方式。
    - 仍**不做短信 OTP**。
