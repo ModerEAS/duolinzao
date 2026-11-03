@@ -290,7 +290,7 @@ Then("菜、饭、汤分开展示，无图时用中性占位", async ({ page }) 
   expect(await page.locator("article.panel.dish .thumb.ph").count()).toBeGreaterThanOrEqual(1);
 });
 
-// ---- 设备与 Passkey 及新设备页内确认 ----
+// ---- 设备与通行密钥 及新设备页内确认 ----
 let ctxB: BrowserContext | null = null;
 let pageB: Page | null = null;
 let ctxC: BrowserContext | null = null;
@@ -369,14 +369,14 @@ Given("员工已在设备 A 登录", async ({ page }) => {
 
 When("打开设备与 Passkey 页", async ({ page }) => {
   await openTab(page, "我的");
-  await page.getByText("设备与 Passkey", { exact: true }).click();
+  await page.getByText("设备与通行密钥", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "待确认" })).toBeVisible();
 });
 
 Then("可查看本账号设备、踢掉设备、解绑 Passkey", async ({ page }) => {
   // 列表可见。
   await expect(page.getByText("设备").first()).toBeVisible();
-  await expect(page.getByText("Passkey").first()).toBeVisible();
+  await expect(page.getByText("通行密钥").first()).toBeVisible();
   // B 上下文同账号密码登录 → 第二台设备；A 踢掉最后一台（即 B）。
   const browser = page.context().browser();
   expect(browser).toBeTruthy();
@@ -394,7 +394,7 @@ Then("可查看本账号设备、踢掉设备、解绑 Passkey", async ({ page }
   await expect(pageB.locator(".emp")).toBeVisible({ timeout: 15000 });
   await page.reload();
   await openTab(page, "我的");
-  await page.getByText("设备与 Passkey", { exact: true }).click();
+  await page.getByText("设备与通行密钥", { exact: true }).click();
   const kicks = page.getByRole("button", { name: "踢下线" });
   // 设备列表是异步加载的，轮询等到两台都出现。
   await expect(async () => {
@@ -413,7 +413,7 @@ Then("可查看本账号设备、踢掉设备、解绑 Passkey", async ({ page }
   await bindPasskey(page, "e2e-设备A");
   await page.reload();
   await openTab(page, "我的");
-  await page.getByText("设备与 Passkey", { exact: true }).click();
+  await page.getByText("设备与通行密钥", { exact: true }).click();
   await expect(page.getByText("e2e-设备A")).toBeVisible({ timeout: 10000 });
   await page.getByRole("button", { name: "解绑" }).first().click();
   await expect(page.getByText("e2e-设备A")).toHaveCount(0, { timeout: 10000 });
@@ -435,7 +435,7 @@ When("新设备 B 发起登录并生成待确认请求", async ({ page }) => {
 Then("设备 A 在页内弹出确认层并展示 User-Agent 与 IP", async ({ page }) => {
   await page.reload();
   await openTab(page, "我的");
-  await page.getByText("设备与 Passkey", { exact: true }).click();
+  await page.getByText("设备与通行密钥", { exact: true }).click();
   const panel = page.locator("article.panel", { hasText: "允许" }).first();
   await expect(panel).toBeVisible({ timeout: 15000 });
   const text = await panel.textContent();
@@ -474,7 +474,7 @@ When("另一次请求在已登录设备上被拒绝", async ({ page }) => {
   await expect(pageD.getByText("等待确认")).toBeVisible({ timeout: 10000 });
   await page.reload();
   await openTab(page, "我的");
-  await page.getByText("设备与 Passkey", { exact: true }).click();
+  await page.getByText("设备与通行密钥", { exact: true }).click();
   const panel = page.locator("article.panel", { hasText: "允许" }).first();
   await expect(panel).toBeVisible({ timeout: 15000 });
   await panel.getByRole("button", { name: "拒绝" }).click();
@@ -534,10 +534,10 @@ When("在账户设置绑定 Passkey 并自助修改密码", async ({ page }) => 
   await page.getByText("账户设置", { exact: true }).click();
   await enableVirtualAuth(page);
   const account = page.locator(".account");
-  await account.getByRole("button", { name: "Passkey", exact: true }).click();
-  await page.getByRole("button", { name: "添加 Passkey" }).click();
-  await page.getByPlaceholder("Passkey 名称，例如办公室电脑").fill("账户钥匙");
-  await page.getByRole("button", { name: "绑定 Passkey" }).click();
+  await account.getByRole("button", { name: "通行密钥", exact: true }).click();
+  await page.getByRole("button", { name: "添加通行密钥" }).click();
+  await page.getByPlaceholder("通行密钥名称，例如办公室电脑").fill("账户钥匙");
+  await page.getByRole("button", { name: "绑定通行密钥" }).click();
   await expect(page.getByText("账户钥匙")).toBeVisible({ timeout: 15000 });
   await account.getByRole("button", { name: "返回", exact: true }).click();
   await account.getByRole("button", { name: "验证器", exact: true }).click();
@@ -571,7 +571,7 @@ When("把密码改回并退出登录", async ({ page }) => {
   await expect(page.getByText(/密码已更新/).last()).toBeVisible();
   const account = page.locator(".account");
   await account.getByRole("button", { name: "返回", exact: true }).click();
-  await account.getByRole("button", { name: "Passkey", exact: true }).click();
+  await account.getByRole("button", { name: "通行密钥", exact: true }).click();
   const keys = page.locator(".account .passkey-item");
   while ((await keys.count()) > 0) {
     const before = await keys.count();
@@ -594,7 +594,7 @@ When("把密码改回并退出登录", async ({ page }) => {
 });
 
 Then("回到登录页", async ({ page }) => {
-  await expect(page.getByRole("button", { name: /使用 Passkey 登录/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /使用通行密钥登录/ })).toBeVisible();
   await accountCtx?.close();
   accountCtx = null;
   accountPage = null;
@@ -610,7 +610,7 @@ When("员工已登录并绑定一枚 Passkey", async ({ page }) => {
 When("退出到登录页并使用 Passkey 登录", async ({ page }) => {
   await page.context().clearCookies();
   await page.goto("/");
-  await page.getByRole("button", { name: /使用 Passkey 登录/ }).click();
+  await page.getByRole("button", { name: /使用通行密钥登录/ }).click();
 });
 
 Then("免填账号直接进入工作台", async ({ page }) => {

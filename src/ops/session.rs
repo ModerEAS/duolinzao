@@ -919,7 +919,7 @@ pub async fn passkey_register_start(
         .start_passkey_registration(user.account_id, &user.username, &label, Some(exclude))
         .map_err(|err| {
             tracing::warn!(error = ?err, "passkey start");
-            AppError::bad("passkey_failed", "无法开始绑定 Passkey")
+            AppError::bad("passkey_failed", "无法开始绑定通行密钥")
         })?;
     // 首页是 usernameless 登录（空 allowCredentials + userHandle），要求钥匙 discoverable。
     // webauthn-rs 0.5 的 start_passkey_registration 写死 residentKey discouraged，
@@ -978,7 +978,7 @@ pub async fn passkey_register_finish(
     let passkey = state
         .webauthn
         .finish_passkey_registration(&credential, &reg_state)
-        .map_err(|_| AppError::bad("passkey_failed", "Passkey 校验失败"))?;
+        .map_err(|_| AppError::bad("passkey_failed", "通行密钥校验失败"))?;
     let id = store_passkey(state, user.account_id, &passkey, friendly_name).await?;
     let hit = authorize(&user.assignments, Perm::DeviceApprove, None)?;
     audit_user(
@@ -1051,7 +1051,7 @@ fn passkey_none() -> AppError {
     AppError::new(
         axum::http::StatusCode::NOT_FOUND,
         "passkey_none",
-        "这个账号还没有 Passkey，请用密码登录",
+        "这个账号还没有通行密钥，请用密码登录",
     )
 }
 
@@ -1066,7 +1066,7 @@ pub async fn passkey_auth_start(
         let (challenge, auth_state) = state
             .webauthn
             .start_discoverable_authentication()
-            .map_err(|_| AppError::bad("passkey_failed", "无法开始 Passkey 登录"))?;
+            .map_err(|_| AppError::bad("passkey_failed", "无法开始通行密钥登录"))?;
         let id = Uuid::new_v4();
         state
             .challenges
@@ -1095,7 +1095,7 @@ pub async fn passkey_auth_start(
     let (challenge, auth_state) = state
         .webauthn
         .start_passkey_authentication(&creds)
-        .map_err(|_| AppError::bad("passkey_failed", "无法开始 Passkey 登录"))?;
+        .map_err(|_| AppError::bad("passkey_failed", "无法开始通行密钥登录"))?;
     let id = Uuid::new_v4();
     state
         .challenges
@@ -1171,7 +1171,7 @@ async fn passkey_auth_finish_named(
         Ok(item) => item,
         Err(_) => {
             fail(username, ip).await;
-            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+            return Err(AppError::bad("passkey_failed", "通行密钥校验失败"));
         }
     };
     let account = sqlx::query("SELECT id, username FROM account WHERE username = $1")
@@ -1180,12 +1180,12 @@ async fn passkey_auth_finish_named(
         .await?;
     let Some(account) = account else {
         fail(username, ip).await;
-        return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+        return Err(AppError::bad("passkey_failed", "通行密钥校验失败"));
     };
     let account_id: Uuid = account.get("id");
     if !touch_passkey_counter(state, account_id, &result).await? {
         fail(username, ip).await;
-        return Err(AppError::bad("passkey_failed", "Passkey 不属于该账号"));
+        return Err(AppError::bad("passkey_failed", "通行密钥不属于该账号"));
     }
     record_login(&state.pool, username, ip, true, now).await?;
     let issued = issue_session(&state.pool, state.clock.now(), account_id, user_agent, ip).await?;
@@ -1245,7 +1245,7 @@ async fn passkey_auth_finish_discoverable(
         Ok((id, _)) => id,
         Err(_) => {
             fail_ip.await;
-            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+            return Err(AppError::bad("passkey_failed", "通行密钥校验失败"));
         }
     };
     let account = sqlx::query("SELECT id, username FROM account WHERE id = $1")
@@ -1254,7 +1254,7 @@ async fn passkey_auth_finish_discoverable(
         .await?;
     let Some(account) = account else {
         fail_ip.await;
-        return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+        return Err(AppError::bad("passkey_failed", "通行密钥校验失败"));
     };
     let username: String = account.get("username");
     // 拿到账号后与密码登录共用同一失败计数窗；每次失败都落库。
@@ -1272,12 +1272,12 @@ async fn passkey_auth_finish_discoverable(
         Ok(item) => item,
         Err(_) => {
             record_login(&state.pool, &username, ip, false, now).await?;
-            return Err(AppError::bad("passkey_failed", "Passkey 校验失败"));
+            return Err(AppError::bad("passkey_failed", "通行密钥校验失败"));
         }
     };
     if !touch_passkey_counter(state, account_id, &result).await? {
         record_login(&state.pool, &username, ip, false, now).await?;
-        return Err(AppError::bad("passkey_failed", "Passkey 不属于该账号"));
+        return Err(AppError::bad("passkey_failed", "通行密钥不属于该账号"));
     }
     record_login(&state.pool, &username, ip, true, now).await?;
     let issued = issue_session(&state.pool, state.clock.now(), account_id, user_agent, ip).await?;

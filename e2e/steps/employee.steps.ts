@@ -66,7 +66,7 @@ Given("系统已部署并可访问", async ({ page }) => {
   lastSlot = null;
   weekAdvanced = false;
   await page.goto("/");
-  await expect(page.getByRole("button", { name: /使用 Passkey 登录/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /使用通行密钥登录/ })).toBeVisible();
 });
 
 // 背景：邀请码与食堂由 scripts/e2e.sh 调 e2e/seed.sql 预置，这里只确认配置存在。
@@ -121,7 +121,7 @@ Then("登录入口按 Passkey、TOTP、邮箱验证码、密码顺序展示", as
   const s = await rootSession();
   await s.call("/api/admin/settings/email", { method: "PUT", body: { enabled: true } });
   await page.goto("/");
-  await expect(page.getByRole("button", { name: /使用 Passkey 登录/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /使用通行密钥登录/ })).toBeVisible();
   await page.getByPlaceholder("账号").fill("e2e_order_probe");
   await page.getByRole("button", { name: "下一步" }).click();
   const texts = await page.getByRole("button").allTextContents();

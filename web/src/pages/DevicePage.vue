@@ -44,7 +44,7 @@ async function unbind(id: string) {
 
 async function decide(id: string, allow: boolean) {
   await api(`/api/login-approvals/${id}/${allow ? "allow" : "deny"}`, { method: "POST" });
-  ElMessage.success(allow ? "已允许，对方可以绑定 Passkey" : "已拒绝");
+  ElMessage.success(allow ? "已允许，对方可以绑定通行密钥" : "已拒绝");
   await load();
 }
 
@@ -68,12 +68,12 @@ onMounted(load);
         </el-table-column>
       </el-table>
     </div>
-    <h2>Passkey</h2>
+    <h2>通行密钥</h2>
     <div v-for="item in passkeys" :key="item.id" class="card row">
-      <span>{{ item.friendly_name || "Passkey" }}</span>
+      <span>{{ item.friendly_name || "通行密钥" }}</span>
       <el-button type="danger" plain size="small" @click="unbind(item.id)">解绑</el-button>
     </div>
-    <p v-if="passkeys.length === 0" class="muted">还没有绑定 Passkey</p>
+    <p v-if="passkeys.length === 0" class="muted">还没有绑定通行密钥</p>
     <div v-for="item in pending" :key="item.id" class="card pending">
       <h3>待确认 · {{ item.friendly_name }}</h3>
       <div class="muted">IP：{{ item.ip }}</div>

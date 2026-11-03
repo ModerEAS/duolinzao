@@ -71,7 +71,7 @@ const confirmHint = computed(() => {
 });
 const panelTitle = computed(() => {
   if (panel.value === "name") return "显示名";
-  if (panel.value === "passkey") return "Passkey";
+  if (panel.value === "passkey") return "通行密钥";
   if (panel.value === "totp") return "验证器";
   if (panel.value === "email") return "邮箱";
   return "密码";
@@ -172,7 +172,7 @@ function beginAddPasskey() {
 
 async function bindPasskey() {
   if (!window.PublicKeyCredential) {
-    ElMessage.error("这个浏览器不能绑定 Passkey");
+    ElMessage.error("这个浏览器不能绑定通行密钥");
     return;
   }
   busy.value = true;
@@ -197,7 +197,7 @@ async function bindPasskey() {
     });
     addingPasskey.value = false;
     passkeyName.value = "";
-    ElMessage.success("Passkey 已绑定");
+    ElMessage.success("通行密钥已绑定");
     await loadPasskeys();
   } catch (error) {
     ElMessage.error(explain(error));
@@ -208,7 +208,7 @@ async function bindPasskey() {
 
 async function unbind(id: string) {
   try {
-    await ElMessageBox.confirm("解绑后这把 Passkey 不能再登录。", "解绑 Passkey", {
+    await ElMessageBox.confirm("解绑后这把通行密钥不能再登录。", "解绑通行密钥", {
       type: "warning",
       confirmButtonText: "解绑",
       cancelButtonText: "取消",
@@ -387,10 +387,10 @@ onMounted(async () => {
 
           <div v-else-if="panel === 'passkey'" class="editor">
             <p class="muted">用来登录的钥匙。解绑只影响这一把。</p>
-            <p v-if="passkeys.length === 0 && !addingPasskey" class="empty">还没有绑定 Passkey。添加后可以用它登录。</p>
+            <p v-if="passkeys.length === 0 && !addingPasskey" class="empty">还没有绑定通行密钥。添加后可以用它登录。</p>
             <div v-for="item in passkeys" :key="item.id" class="passkey-item">
               <div>
-                <strong>{{ item.friendly_name || "Passkey" }}</strong>
+                <strong>{{ item.friendly_name || "通行密钥" }}</strong>
                 <span class="muted">{{ formatWhen(item.created_at) }} 添加</span>
               </div>
               <button type="button" class="text-danger" @click="unbind(item.id)">解绑</button>
@@ -398,16 +398,16 @@ onMounted(async () => {
             <div v-if="addingPasskey" class="composer">
               <label class="field">
                 <span>名称</span>
-                <el-input v-model="passkeyName" maxlength="64" placeholder="Passkey 名称，例如办公室电脑" />
+                <el-input v-model="passkeyName" maxlength="64" placeholder="通行密钥名称，例如办公室电脑" />
               </label>
               <p class="muted">已按浏览器和系统填了一个名字，可以改。</p>
               <div class="form-actions">
-                <el-button type="primary" native-type="button" :disabled="busy" @click="bindPasskey">绑定 Passkey</el-button>
+                <el-button type="primary" native-type="button" :disabled="busy" @click="bindPasskey">绑定通行密钥</el-button>
                 <button type="button" class="text" :disabled="busy" @click="addingPasskey = false">取消</button>
               </div>
             </div>
             <div v-else class="form-actions">
-              <el-button type="primary" native-type="button" :disabled="busy" @click="beginAddPasskey">添加 Passkey</el-button>
+              <el-button type="primary" native-type="button" :disabled="busy" @click="beginAddPasskey">添加通行密钥</el-button>
             </div>
           </div>
 
@@ -506,8 +506,8 @@ onMounted(async () => {
           <section v-if="embedded || section === 'security'" class="group">
             <h2 v-if="embedded">登录与安全</h2>
             <div class="inset">
-              <button type="button" class="set-row" aria-label="Passkey" @click="openPanel('passkey')">
-                <span>Passkey</span>
+              <button type="button" class="set-row" aria-label="通行密钥" @click="openPanel('passkey')">
+                <span>通行密钥</span>
                 <span class="set-value">{{ passkeyStatus }}</span>
                 <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
@@ -532,8 +532,8 @@ onMounted(async () => {
           <section v-if="embedded || section === 'device'" class="group">
             <h2 v-if="embedded">设备</h2>
             <div class="inset">
-              <button type="button" class="set-row" aria-label="设备与 Passkey" @click="emit('open-devices')">
-                <span>设备与 Passkey</span>
+              <button type="button" class="set-row" aria-label="设备与通行密钥" @click="emit('open-devices')">
+                <span>设备与通行密钥</span>
                 <span class="set-value">登录设备</span>
                 <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>

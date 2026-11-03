@@ -114,10 +114,10 @@ async function passkeyLogin(username?: string) {
     } catch (error) {
       // 用户取消 / 无可用凭证：都是本地行为，不打 error toast 吓人。
       if (error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "AbortError")) {
-        ElMessage.info("已取消 Passkey 登录");
+        ElMessage.info("已取消通行密钥登录");
         return;
       }
-      ElMessage.info("没有可用的 Passkey，请用密码登录");
+      ElMessage.info("没有可用的通行密钥，请用密码登录");
       return;
     }
     if (!credential) return;
@@ -132,10 +132,10 @@ async function passkeyLogin(username?: string) {
     await enter();
   } catch (error) {
     if (error instanceof ApiError && error.code === "passkey_none") {
-      ElMessage.info("这个账号还没有 Passkey，请用下面的密码登录");
+      ElMessage.info("这个账号还没有通行密钥，请用下面的密码登录");
       return;
     }
-    ElMessage.error(error instanceof Error ? error.message : "Passkey 登录失败");
+    ElMessage.error(error instanceof Error ? error.message : "通行密钥登录失败");
   }
 }
 
@@ -265,8 +265,8 @@ async function poll() {
 
       <template v-if="screen === 'home'">
         <h1>登录</h1>
-        <p class="sub">使用 Passkey，或输入账号继续</p>
-        <el-button type="primary" size="large" class="full" @click="passkeyLogin()">使用 Passkey 登录</el-button>
+        <p class="sub">使用通行密钥，或输入账号继续</p>
+        <el-button type="primary" size="large" class="full" @click="passkeyLogin()">使用通行密钥登录</el-button>
         <div class="divider">或</div>
         <el-input id="login-username" v-model="username" placeholder="账号" autocomplete="username" class="mb" @keyup.enter="goNext" />
         <div class="row-actions">
@@ -280,7 +280,7 @@ async function poll() {
         <div class="chip-wrap"><div class="chip"><span class="avatar">{{ avatar }}</span><span>{{ account }}</span></div></div>
         <div class="methods">
           <button type="button" class="method" @click="passkeyLogin(username)">
-            <span><span class="t">通行密钥</span><span class="d">使用该账号绑定的 Passkey 登录</span></span><span class="arrow">›</span>
+            <span><span class="t">通行密钥</span><span class="d">使用该账号绑定的通行密钥登录</span></span><span class="arrow">›</span>
           </button>
           <button type="button" class="method" @click="screen = 'password'">
             <span><span class="t">密码</span><span class="d">使用账号密码登录</span></span><span class="arrow">›</span>
