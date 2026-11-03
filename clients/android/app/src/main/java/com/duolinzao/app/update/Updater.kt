@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 应用内更新：只请求当前 baseUrl 同源的 version.json（§4.4），并带登录会话 cookie
- * （服务端 `/app/*` 匿名 401）。versionCode 更大才提示；下载后校验 sha256 + 包名
+ * （服务端 app 路径匿名返回 401）。versionCode 更大才提示；下载后校验 sha256 + 包名
  * （签名证书指纹尽力比对），任一失败丢弃。
  */
 object Updater {
@@ -29,7 +29,7 @@ object Updater {
         try {
             val base = ServerConfig.effectiveBase()
             if (base.isEmpty()) return@withContext null
-            // /app/* 要求有效会话；必须复用登录 CookieJar，不能匿名拉。
+            // app 路径要求有效会话；必须复用登录 CookieJar，不能匿名拉。
             val builder = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
             Session.cookies?.let { builder.cookieJar(it) }
