@@ -21,8 +21,8 @@ UI 参考：[docs/ui](../ui/README.md)
 | 最低版本 | **minSdk 30（Android 11）**，理由见 §8.4 |
 | Passkey | 使用 **Android Credential Manager / 平台 API**，**不用 WebView 套 WebAuthn 页** |
 | 登录优先级 | **默认 Passkey**；无可用凭据 / 取消 / 失败后再密码（备用入口可手动切密码） |
-| 分发 | **只从各部署自己的服务器分发**：部署方改包内 Base URL 后重签，经站点 `/app/` 下发；**不用 GitHub Releases，暂不上应用商店** |
-| 应用内更新 | 第一版即包含：从自家服务器同源拉 `{baseUrl}/app/version.json`；服务端配套支持（§4.4） |
+| 分发 | **只从各部署自己的服务器分发**：部署方改包内 Base URL 后重签，经站点 `/app/` 下发；**不用 GitHub Releases，暂不上应用商店**；`GET /app/*` 需有效会话（匿名 401）；首次装包入口只在超管「应用签名」页 |
+| 应用内更新 | 第一版即包含：已登录用户从自家服务器同源拉 `{baseUrl}/app/version.json`（带会话 cookie）；服务端配套支持（§4.4） |
 | 卓易通 | 不作为交付目标，但保持兼容：核心流程不依赖仅 GMS 才有的能力（§8.2） |
 
 ---

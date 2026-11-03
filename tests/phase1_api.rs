@@ -2647,6 +2647,20 @@ async fn csrf_gate_and_security_headers() {
 async fn app_static_no_spa_fallback() {
     let _gate = GATE.lock().await;
     let api = prepare().await;
+    let token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("app-static-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login for /app",
+    )
+    .token();
 
     // 本用例自建带 static_dir 的 state：公共 prepare 不配静态目录，
     // 否则 fallback 的 ServeDir 会把“无路由 POST”的 404 变成 405，干扰旧断言。
@@ -2676,13 +2690,19 @@ async fn app_static_no_spa_fallback() {
     .unwrap();
     let app = router(state);
 
-    async fn raw(app: axum::Router, uri: &str) -> (StatusCode, Value, Vec<(String, String)>, Vec<u8>) {
-        let request = Request::builder()
+    async fn raw(
+        app: axum::Router,
+        uri: &str,
+        token: Option<&str>,
+    ) -> (StatusCode, Value, Vec<(String, String)>, Vec<u8>) {
+        let mut builder = Request::builder()
             .method("GET")
             .uri(uri)
-            .header("user-agent", "phase1-test")
-            .body(Body::empty())
-            .unwrap();
+            .header("user-agent", "phase1-test");
+        if let Some(token) = token {
+            builder = builder.header("cookie", format!("dlz_session={token}"));
+        }
+        let request = builder.body(Body::empty()).unwrap();
         let response = app.oneshot(request).await.expect("oneshot");
         let status = response.status();
         let headers = response
@@ -2707,16 +2727,24 @@ async fn app_static_no_spa_fallback() {
             .unwrap_or_default()
     };
 
-    // version.json：200 + JSON 体 + JSON 类型 + 不缓存。
-    let (status, body, headers, _) = raw(app.clone(), "/app/version.json").await;
+    // 匿名：401，不发公开直链。
+    let (status, body, _, _) = raw(app.clone(), "/app/version.json", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "匿名 version.json 应 401");
+    assert_eq!(body["error"], "unauthorized", "{body}");
+    let (status, body, _, _) = raw(app.clone(), "/app/duolinzao.apk", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "匿名 apk 应 401");
+    assert_eq!(body["error"], "unauthorized", "{body}");
+
+    // 已登录：version.json 200 + JSON 体 + JSON 类型 + 不缓存。
+    let (status, body, headers, _) = raw(app.clone(), "/app/version.json", Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "version.json 应直出");
     assert_eq!(body["versionCode"], 1, "{body}");
     assert_eq!(body["url"], "/app/duolinzao.apk", "{body}");
     assert_eq!(header(&headers, "content-type"), "application/json", "{headers:?}");
     assert_eq!(header(&headers, "cache-control"), "no-store", "{headers:?}");
 
-    // APK：200 + Android 包类型。
-    let (status, _, headers, bytes) = raw(app.clone(), "/app/duolinzao.apk").await;
+    // 已登录：APK 200 + Android 包类型 + private 缓存。
+    let (status, _, headers, bytes) = raw(app.clone(), "/app/duolinzao.apk", Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "apk 应直出");
     assert_eq!(bytes, b"fakepk", "应为夹具包内容");
     assert_eq!(
@@ -2724,9 +2752,10 @@ async fn app_static_no_spa_fallback() {
         "application/vnd.android.package-archive",
         "{headers:?}"
     );
+    assert_eq!(header(&headers, "cache-control"), "private, max-age=3600", "{headers:?}");
 
     // 缺文件：404 JSON（error=not_found），绝不能回退 index.html。
-    let (status, body, headers, bytes) = raw(app.clone(), "/app/missing.apk").await;
+    let (status, body, headers, bytes) = raw(app.clone(), "/app/missing.apk", Some(&token)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "缺文件应 404");
     assert_eq!(body["error"], "not_found", "{body}");
     assert_eq!(header(&headers, "content-type"), "application/json", "{headers:?}");
@@ -2736,7 +2765,7 @@ async fn app_static_no_spa_fallback() {
     );
 
     // 路径逃逸：同样 404。
-    let (status, _, _, _) = raw(app.clone(), "/app/../secret").await;
+    let (status, _, _, _) = raw(app.clone(), "/app/../secret", Some(&token)).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "逃逸应 404");
 }
 
@@ -2744,6 +2773,20 @@ async fn app_static_no_spa_fallback() {
 async fn app_static_custom_app_dir() {
     let _gate = GATE.lock().await;
     let api = prepare().await;
+    let token = must(
+        api.call(
+            "POST",
+            "/api/session/password",
+            None,
+            Some(json!({"username": "root", "password": "root-password-1"})),
+            Some("app-dir-root"),
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "super login for custom app_dir",
+    )
+    .token();
 
     // staging 姿态：[server] app_dir 指向另一份目录，/app/* 从它直出，
     // 而 {static_dir}/app 下的文件不再被服务（默认回退只在未配 app_dir 时生效）。
@@ -2781,6 +2824,7 @@ async fn app_static_custom_app_dir() {
         .method("GET")
         .uri("/app/version.json")
         .header("user-agent", "phase1-test")
+        .header("cookie", format!("dlz_session={token}"))
         .body(Body::empty())
         .unwrap();
     let response = app.oneshot(request).await.expect("oneshot");
@@ -2805,6 +2849,7 @@ async fn app_static_custom_app_dir() {
         .method("GET")
         .uri("/app/../secret")
         .header("user-agent", "phase1-test")
+        .header("cookie", format!("dlz_session={token}"))
         .body(Body::empty())
         .unwrap();
     let response = app2.oneshot(request).await.expect("oneshot");

@@ -270,7 +270,8 @@ keytool -genkeypair -keystore site.jks -storepass '<强随机密码>' -keypass '
    恢复数据库即还原签名能力。
 3. 点「签名发布」：服务端用库里 keystore 给当前镜像里的包签名（`apksigner`，镜像自带），
    重算 sha256 并写出正式 `version.json`（`"signing":"release"`）。
-4. 验证：`curl -fsS https://example.com/app/version.json | jq .`
+4. 验证（需已登录会话；匿名会 401）：浏览器打开站点登录后访问 `/app/version.json`，
+   或 `curl -fsS -b 'dlz_session=<token>' https://example.com/app/version.json | jq .`
    （把域名换成自己的；期望 `signing` 为 `release`）。
 5. **每次部署新镜像后都要再点一次「签名发布」**（镜像更新会重置 `/app/*` 为未签包）。
 
@@ -287,10 +288,13 @@ DB 尚未配置 keystore 时：staging/CI 保持绿（`/app/*` 是 CI 未签包�
 即丢弃更新）。所以：keystore 建好后**离线备份**（至少两处，如加密 U 盘 + 密码管理器附件），
 密码同样备份；**数据库备份即包含签名密钥，备份必须同等保护**；丢了只能让所有人重装。
 
-### 7.5 首次装包
+### 7.5 首次装包与更新门禁
 
-- 生产手机浏览器打开 `https://example.com/app/duolinzao.apk`（把域名换成自己的）
-  下载安装；之后 App 内「检查更新」会自动提示。
+- **`GET /app/*`（apk + version.json）要有效会话**，匿名 401，防刷流/随便下。
+- **首次/对外下载入口只在超管「应用签名」页**（复制链接 / 下载 APK）。员工「我的」、
+  食堂「更多」、登录页、页脚都不挂入口。
+- 超管在本页下载后可线下分发；若复制链接给别人，对方也必须已登录本站，否则 401。
+- **已登录用户**可在 App 内「检查更新」拉同源 `/app/version.json` 与 APK（请求带会话 cookie）。
 - 镜像体积：两份 APK 都是 MB 级（具体数字见 PR 描述），加上 JRE + build-tools
  （服务端签名用，约数百 MB）；**没开 R8/混淆**（会改 App 行为），除非确认安全才考虑。
 
@@ -314,7 +318,7 @@ DB 尚未配置 keystore 时：staging/CI 保持绿（`/app/*` 是 CI 未签包�
 - 可观测：日志关键字 `apk auto signed on boot`（成功，带 versionCode/sha256）/
   `apk auto sign skipped|failed`（跳过/失败原因）；「应用签名」页新增「已发布」一行，
   直接显示 `version.json` 实况（versionCode + signing），超管一眼确认自签是否生效。
-- 验证：部署新镜像后 `curl -fsS https://example.com/app/version.json | jq .`
+- 验证：部署新镜像后，用已登录会话访问 `/app/version.json`
   （期望 `signing` 为 `release`，sha256 与刚构建的包一致），外加服务端日志一条成功记录；
   空库场景应看到 skip 告警、且 `app_signing` 表仍为空（不自动建 key）。
 

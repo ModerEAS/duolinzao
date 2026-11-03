@@ -239,11 +239,14 @@ async fn assetlinks(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// 站点自托管 `/app/`（通用 APK 与 version.json，供应用内更新同源拉取）。
+/// **要求有效会话**：匿名一律 401。首次装包入口只在超管「应用签名」页（复制链接/下载）；
+/// 员工「我的」、食堂「更多」、登录页、页脚不放入口。已登录用户可检查更新并拉 APK。
 /// 文件来自 `app_dir`（`[server] app_dir` 或 `DLZ_APP_DIR`，缺省 `{static_dir}/app/`）；
 /// 缺文件、未配目录或路径逃逸一律 404 JSON，绝不回退 index.html
 /// （否则 App 会把 HTML 当 version.json 解析失败）。
 async fn serve_app_file(
     State(state): State<AppState>,
+    _user: CurrentUser,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
     let not_found = || {
@@ -271,11 +274,11 @@ async fn serve_app_file(
     } else {
         "application/octet-stream"
     };
-    // version.json 不缓存；APK 可缓存一小时（文件名随版本走 version.json 的 url）。
+    // version.json 不缓存；APK 可私有缓存一小时（带会话才拿到，别让共享缓存回放给匿名）。
     let cache = if full.ends_with("version.json") {
         "no-store"
     } else {
-        "public, max-age=3600"
+        "private, max-age=3600"
     };
     (
         [

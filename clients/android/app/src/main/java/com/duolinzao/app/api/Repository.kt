@@ -259,7 +259,11 @@ class NetworkRepository(private val api: ApiClient) : DlRepository {
         api.post("/api/notifications/$id/read")
     }
     override suspend fun checkUpdate(): VersionInfo? {
-        return null
+        return try {
+            parse(api.get("/app/version.json"))
+        } catch (_: Exception) {
+            null
+        }
     }
     override suspend fun headcount(canteenId: String, date: String): Headcount =
         parse(api.get("/api/canteens/$canteenId/headcount?date=$date"))
