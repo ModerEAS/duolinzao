@@ -132,9 +132,9 @@ fun MineScreen(onLogout: () -> Unit, onOpenShift: () -> Unit, onSwitchWorkbench:
             }
         }
 
-        SectionTitle("设备与 Passkey")
-        Text("本页可绑定/解绑 Passkey、移除设备", style = MaterialTheme.typography.bodySmall)
-        DlOutlineButton("绑定本机 Passkey") {
+        SectionTitle("设备与通行密钥")
+        Text("本页可绑定/解绑通行密钥、移除设备", style = MaterialTheme.typography.bodySmall)
+        DlOutlineButton("绑定本机通行密钥") {
             scope.launch {
                 try {
                     val activity = context as Activity
@@ -143,14 +143,14 @@ fun MineScreen(onLogout: () -> Unit, onOpenShift: () -> Unit, onSwitchWorkbench:
                         Json.encodeToString(kotlinx.serialization.json.JsonElement.serializer(), it)
                     }.orEmpty()
                     val credential = PasskeyHelper.createPasskey(activity, requestJson)
-                    if (credential == null) error = "此设备不支持 Passkey"
-                    else run({ Session.repo.passkeyRegisterFinish(started.challenge_id, credential, android.os.Build.MODEL) }, "Passkey 已绑定")
+                    if (credential == null) error = "此设备不支持通行密钥"
+                    else run({ Session.repo.passkeyRegisterFinish(started.challenge_id, credential, android.os.Build.MODEL) }, "通行密钥已绑定")
                 } catch (e: Exception) { error = if (e is ApiException) e.message else "绑定失败" }
             }
         }
         devices?.passkeys?.forEach { p ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Passkey：${p.friendly_name ?: p.id.take(8)}")
+                Text("通行密钥：${p.friendly_name ?: p.id.take(8)}")
                 TextButton(onClick = { scope.launch { run({ Session.repo.deletePasskey(p.id) }, "已解绑") } }) { Text("解绑") }
             }
         }

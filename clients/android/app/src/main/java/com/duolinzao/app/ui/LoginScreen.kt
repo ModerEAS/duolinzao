@@ -80,7 +80,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         DlTextField(username, { username = it }, "账号", testTag = "login_username")
 
-        DlPrimaryButton("使用 Passkey 登录") {
+        DlPrimaryButton("使用通行密钥登录") {
             scope.launch {
                 busy = true; error = null
                 try {
@@ -93,7 +93,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
                     val assertion = PasskeyHelper.getAssertion(activity, requestJson)
                     if (assertion == null) {
                         showPwd = true
-                        error = "Passkey 不可用，已切换到密码登录"
+                        error = "通行密钥不可用，已切换到密码登录"
                     } else {
                         Session.repo.passkeyFinish(challengeId = started.challenge_id, credentialJson = assertion)
                         enter()
@@ -103,7 +103,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
             }
         }
         // 该账号回退：带 username 走 allowCredentials，兼容非 discoverable 旧钥匙。
-        DlOutlineButton("用该账号 Passkey 登录", enabled = username.isNotBlank()) {
+        DlOutlineButton("用该账号通行密钥登录", enabled = username.isNotBlank()) {
             scope.launch {
                 busy = true; error = null
                 try {
@@ -115,7 +115,7 @@ fun LoginScreen(onDone: () -> Unit, onRegister: () -> Unit) {
                     val assertion = PasskeyHelper.getAssertion(activity, requestJson)
                     if (assertion == null) {
                         showPwd = true
-                        error = "Passkey 不可用，已切换到密码登录"
+                        error = "通行密钥不可用，已切换到密码登录"
                     } else {
                         Session.repo.passkeyFinish(username = username, challengeId = started.challenge_id, credentialJson = assertion)
                         enter()

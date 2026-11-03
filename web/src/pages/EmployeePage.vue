@@ -156,7 +156,7 @@ const title = computed(() => {
   if (screen.value === "generate") return "用描述生成模板";
   if (screen.value === "preview") return "模板预览";
   if (screen.value === "bind") return "绑定食堂";
-  if (screen.value === "devices") return "设备与 Passkey";
+  if (screen.value === "devices") return "设备与通行密钥";
   if (screen.value === "notices") return "站内提示";
   if (screen.value === "account") return "账户设置";
   if (tab.value === "mine") return "我的";
@@ -788,7 +788,7 @@ onMounted(() => {
           <van-cell title="账号" :value="auth.me?.username" />
           <van-cell title="账户设置" is-link @click="screen = 'account'" />
           <van-cell title="绑定食堂" is-link @click="screen = 'bind'" />
-          <van-cell title="设备与 Passkey" is-link @click="screen = 'devices'" />
+          <van-cell title="设备与通行密钥" is-link @click="screen = 'devices'" />
           <van-cell title="站内提示" is-link :value="unread ? `${unread} 条未读` : ''" @click="screen = 'notices'" />
         </van-cell-group>
         <p class="hint">绑定食堂只决定报餐可用范围，不是食堂管理范围。</p>
@@ -827,10 +827,10 @@ onMounted(() => {
           <p class="hint">{{ item.user_agent }}</p>
           <van-button size="small" type="danger" @click="kick(item.id)">踢下线</van-button>
         </article>
-        <h3 class="block-title">Passkey</h3>
-        <van-empty v-if="passkeys.length === 0" description="还没有绑定 Passkey" />
+        <h3 class="block-title">通行密钥</h3>
+        <van-empty v-if="passkeys.length === 0" description="还没有绑定通行密钥" />
         <article v-for="item in passkeys" :key="item.id" class="panel row">
-          <span>{{ item.friendly_name || "Passkey" }}</span>
+          <span>{{ item.friendly_name || "通行密钥" }}</span>
           <van-button size="small" type="danger" plain @click="unbind(item.id)">解绑</van-button>
         </article>
       </template>

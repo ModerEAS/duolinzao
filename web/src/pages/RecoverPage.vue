@@ -53,7 +53,7 @@ async function reset() {
 
 async function clear(username: string) {
   try {
-    await ElMessageBox.confirm(`清除 ${username} 的 Passkey、TOTP，并结束其会话。`, "清除登录材料", { type: "warning" });
+    await ElMessageBox.confirm(`清除 ${username} 的通行密钥、TOTP，并结束其会话。`, "清除登录材料", { type: "warning" });
   } catch {
     return;
   }
@@ -89,7 +89,7 @@ onMounted(load);
         <el-table-column label="密码" width="90">
           <template #default="{ row }">{{ row.has_password ? "已设置" : "无" }}</template>
         </el-table-column>
-        <el-table-column prop="passkey_count" label="Passkey" width="100" />
+        <el-table-column prop="passkey_count" label="通行密钥" width="100" />
         <el-table-column label="TOTP" width="90">
           <template #default="{ row }">{{ row.totp ? "已确认" : "无" }}</template>
         </el-table-column>

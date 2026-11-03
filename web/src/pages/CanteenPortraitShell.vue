@@ -81,7 +81,7 @@ const groups = computed((): { name: string; items: MoreItem[] }[] => {
   ];
   const account: MoreItem[] = [
     { key: "account", label: "账户设置", show: true },
-    { key: "device", label: "设备与 Passkey", show: can("device.approve") },
+    { key: "device", label: "设备与通行密钥", show: can("device.approve") },
     { key: "employee", label: "切换到员工端", show: canEmployee.value },
     { key: "logout", label: "退出登录", show: true },
   ];
@@ -102,7 +102,7 @@ const titles: Record<Sub, string> = {
   rating: "评分汇总",
   comment: "评语",
   change: "截止后改单",
-  device: "设备与 Passkey",
+  device: "设备与通行密钥",
   invite: "邀请码",
   export: "导出",
   audit: "审计",

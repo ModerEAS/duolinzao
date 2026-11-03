@@ -517,7 +517,7 @@ Then("可查看本账号设备与 Passkey、踢设备、解绑 Passkey", async (
   for (const col of ["友好名称", "UA", "IP"]) {
     await expect(page.getByText(col, { exact: true }).first()).toBeVisible();
   }
-  await expect(page.getByRole("heading", { name: "Passkey" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "通行密钥" })).toBeVisible();
 });
 
 Then("可对本账号待确认登录允许或拒绝", async ({ page }) => {
@@ -563,7 +563,7 @@ Then("账户设置展示只读账号、显示名、Passkey、验证器、邮箱�
   await expect(account.getByPlaceholder("账号")).toHaveCount(0);
 
   await account.getByRole("button", { name: "登录与安全", exact: true }).click();
-  await expect(account.getByRole("button", { name: "Passkey", exact: true })).toBeVisible();
+  await expect(account.getByRole("button", { name: "通行密钥", exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "验证器", exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "邮箱", exact: true })).toBeVisible();
   await expect(account.getByRole("button", { name: "密码", exact: true })).toBeVisible();
@@ -580,7 +580,7 @@ Then("账户设置展示只读账号、显示名、Passkey、验证器、邮箱�
 
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
   await account.getByRole("button", { name: "设备", exact: true }).click();
-  await account.getByRole("button", { name: "设备与 Passkey", exact: true }).click();
+  await account.getByRole("button", { name: "设备与通行密钥", exact: true }).click();
   await expect(page.getByText("只管理本账号设备；不能按食堂批准他人的新设备")).toBeVisible();
 });
 

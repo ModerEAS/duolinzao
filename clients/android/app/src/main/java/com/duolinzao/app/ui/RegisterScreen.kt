@@ -50,13 +50,13 @@ fun RegisterScreen(onDone: () -> Unit, onBack: () -> Unit) {
             }.orEmpty()
             val credential = PasskeyHelper.createPasskey(activity, requestJson)
             if (credential == null) {
-                bindState = "此设备不支持 Passkey，已跳过（可在「我的 → 设备与 Passkey」补绑）"
+                bindState = "此设备不支持通行密钥，已跳过（可在「我的 → 设备与通行密钥」补绑）"
             } else {
                 Session.repo.passkeyRegisterFinish(started.challenge_id, credential, "本机")
-                bindState = "Passkey 绑定成功"
+                bindState = "通行密钥绑定成功"
             }
         } catch (_: Exception) {
-            bindState = "Passkey 绑定跳过（可在「我的 → 设备与 Passkey」补绑）"
+            bindState = "通行密钥绑定跳过（可在「我的 → 设备与通行密钥」补绑）"
         }
     }
 
