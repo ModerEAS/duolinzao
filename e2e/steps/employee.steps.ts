@@ -38,29 +38,35 @@ async function gotoNextWeekOnce(page: Page) {
 // P0-1：lock_time=09:00，每周日 09:00（北京时间）后下周一三餐已锁，
 // 按钮变成「早 已锁定」且 disabled。死点第一天的「早」必挂，
 // 所以找第一个未锁定的餐次（已锁定按钮名字是「早 已锁定」，正则直接排除）。
-// 绿=yes（报餐），橙=no（不报）。每次点击前重查可用，加载中途被禁用就换下一餐。
+// 绿=yes（报餐），橙=no（不报）。
+//
+// 注意：餐次是**开关**不是「设定为 X」——班制模板（上二休四）常已经把下周排成报餐，
+// 此时再点一下就是把它翻成不报。所以必须先看当前色再决定点不点；点击后也要等 PUT
+// 落地再断言，否则断言会读到点击前那份 class 直接假通过（然后在下一步超时失败）。
+async function toggleTo(page: Page, slot: Locator, want: "yes" | "no") {
+  if (((await slot.getAttribute("class")) ?? "").includes(want)) return;
+  const written = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && r.url().includes("/api/meals/"),
+    { timeout: 10000 },
+  );
+  await slot.click({ timeout: 5000 });
+  await written;
+  await expect(slot).toHaveClass(want === "yes" ? /yes/ : /no/, { timeout: 10000 });
+}
+
 async function setMeal(page: Page, wantYes: boolean): Promise<Locator> {
   await gotoNextWeekOnce(page);
-  const cls = wantYes ? /yes/ : /no/;
-  for (let round = 0; round < 3; round++) {
-    const slots = page.getByRole("button", { name: /^(早|中|晚)$/ });
-    const count = await slots.count();
-    for (let i = 0; i < count; i++) {
-      const slot = slots.nth(i);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          if (!(await slot.isEnabled())) break;
-          await slot.click({ timeout: 5000 });
-        } catch {
-          break; // 点之前被禁用，换下一餐。
-        }
-        try {
-          await expect(slot).toHaveClass(cls, { timeout: 8000 });
-          return slot;
-        } catch {
-          // 一次点击没到目标态（初始态恰为反义时需要点两次），再点一次。
-        }
-      }
+  const want = wantYes ? "yes" : "no";
+  const slots = page.getByRole("button", { name: /^(早|中|晚)$/ });
+  const count = await slots.count();
+  for (let i = 0; i < count; i++) {
+    const slot = slots.nth(i);
+    if (!(await slot.isEnabled())) continue;
+    try {
+      await toggleTo(page, slot, want);
+      return slot;
+    } catch {
+      // 换了餐次/中途被禁用：试下一餐。
     }
   }
   throw new Error("没有可切换的未锁定餐次");
@@ -303,14 +309,11 @@ Then("该餐显示为绿色", async () => {
 });
 
 When("将某一餐设为不报", async ({ page }) => {
-  // 同一餐后报覆盖先报：优先翻转刚才那一餐，点不动就另找一餐。
+  // 同一餐后报覆盖先报：优先翻转刚才那一餐（幂等：已是不报就不点），点不动就另找一餐。
   if (lastSlot) {
     try {
-      if (await lastSlot.isEnabled()) {
-        await lastSlot.click({ timeout: 5000 });
-        await expect(lastSlot).toHaveClass(/no/, { timeout: 8000 });
-        return;
-      }
+      await toggleTo(page, lastSlot, "no");
+      return;
     } catch {
       // 掉线或被禁用，往下另找。
     }
