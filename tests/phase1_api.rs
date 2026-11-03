@@ -4143,6 +4143,25 @@ async fn passkey_usernameless() {
     .json();
     assert_eq!(missing["error"], "passkey_none");
 
+    // 绑定默认要求 discoverable：新钥匙必须能走首页 usernameless 登录。
+    let reg = must(
+        api.call(
+            "POST",
+            "/api/passkeys/register/start",
+            Some(&super_token),
+            None,
+            None,
+            None,
+        )
+        .await,
+        StatusCode::OK,
+        "register start discoverable",
+    )
+    .json();
+    let selection = &reg["publicKey"]["publicKey"]["authenticatorSelection"];
+    assert_eq!(selection["residentKey"], json!("required"), "{reg}");
+    assert_eq!(selection["requireResidentKey"], json!(true), "{reg}");
+
     // finish：未知 challenge → 登录已过期，不依赖 username。
     let fake_cred = json!({
         "id": "AA",

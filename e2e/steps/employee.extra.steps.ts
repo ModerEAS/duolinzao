@@ -599,3 +599,34 @@ Then("回到登录页", async ({ page }) => {
   accountCtx = null;
   accountPage = null;
 });
+
+// ---- 绑定 Passkey 后可免填账号登录（usernameless 闭环）+ methods 屏命名回退 ----
+When("员工已登录并绑定一枚 Passkey", async ({ page }) => {
+  await ensureLoggedIn(page);
+  // 同一 context 只挂一个虚拟认证器：bindPasskey 内部挂载，登录仪式复用它。
+  await bindPasskey(page, "e2e-闭环");
+});
+
+When("退出到登录页并使用 Passkey 登录", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.getByRole("button", { name: /使用 Passkey 登录/ }).click();
+});
+
+Then("免填账号直接进入工作台", async ({ page }) => {
+  await expect(page.locator(".emp")).toBeVisible({ timeout: 15000 });
+});
+
+When("退出并输入账号后用该账号 Passkey 登录", async ({ page }) => {
+  const me = await page.request.get("/api/me").then((r) => r.json());
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.getByPlaceholder("账号").fill(me.username);
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: /通行密钥/ }).click();
+});
+
+Then("账号命名路径同样进入工作台", async ({ page }) => {
+  await expect(page.locator(".emp")).toBeVisible({ timeout: 15000 });
+  await page.context().clearCookies();
+});
